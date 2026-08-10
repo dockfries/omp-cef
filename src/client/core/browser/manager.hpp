@@ -15,6 +15,7 @@
 #include "include/base/cef_callback.h"
 #include "include/cef_app.h"
 #include "include/cef_browser.h"
+#include "rendering/screen_capture.hpp"
 #include "rendering/view.hpp"
 #include "rendering/world_renderer.hpp"
 #include "shared/packet.hpp"
@@ -154,6 +155,10 @@ public:
     void OnGameFocusGained();
     void OnGameFocusLost();
 
+    void StartScreenCapture(int browserId, int width, int height, int fps);
+    void StopScreenCapture(int browserId);
+    void CaptureScreen();
+
     void ExitGame();
 
     // Native GTA SA ESC/pause menu handling
@@ -225,6 +230,7 @@ private:
     void RequestVisibleBrowsersRepaint();
     void SendExternalBeginFrames();
     void DispatchExternalBeginFramesOnUi();
+    void DispatchScreenFrameOnUi(std::shared_ptr<CapturedScreenFrame> frame);
     bool HandleDragMouseMove(const CefMouseEvent& event);
     bool HandleDragMouseUp(const CefMouseEvent& event);
     void HandleDragMouseMoveOnUi(CefMouseEvent event);
@@ -295,6 +301,7 @@ private:
     std::bitset<256> key_allowed_{};
 
     std::unordered_map<int, PlayerStatsPollState> player_stats_poll_;
+    ScreenCaptureManager screen_capture_;
 
     // Native GTA SA ESC/pause menu handling
     EscapeMenuController escape_menu_;
