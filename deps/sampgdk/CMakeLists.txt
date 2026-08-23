@@ -12,6 +12,12 @@ set(SAMPGDK_HEADERS sampgdk.h)
 
 add_library(sampgdk STATIC ${SAMPGDK_SRC} ${SAMPGDK_HEADERS})
 
+# sampgdk is linked into shared plugin modules (cef.so). Non-PIC objects
+# cannot be linked into a shared library on x86-64, so build PIC on ELF.
+if(UNIX AND NOT APPLE)
+    set_property(TARGET sampgdk PROPERTY POSITION_INDEPENDENT_CODE ON)
+endif()
+
 target_include_directories(sampgdk PUBLIC 
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${SAMPSDK_DIR}/amx
