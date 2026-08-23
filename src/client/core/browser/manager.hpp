@@ -4,6 +4,7 @@
 #include <bitset>
 #include <functional>
 #include <memory>
+#include <cstdint>
 #include <unordered_map>
 #include <vector>
 
@@ -14,6 +15,7 @@
 #include "include/base/cef_callback.h"
 #include "include/cef_app.h"
 #include "include/cef_browser.h"
+#include "rendering/screen_capture.hpp"
 #include "rendering/view.hpp"
 #include "rendering/world_renderer.hpp"
 #include "shared/packet.hpp"
@@ -153,6 +155,10 @@ public:
     void OnGameFocusGained();
     void OnGameFocusLost();
 
+    void StartScreenCapture(int browserId, int width, int height, int fps);
+    void StopScreenCapture(int browserId);
+    void CaptureScreen();
+
     void ExitGame();
 
     // Native GTA SA ESC/pause menu handling
@@ -167,6 +173,13 @@ public:
     void OnBrowserCreated(int id, CefRefPtr<CefBrowser> browser);
     void OnBrowserClosed(int id);
     void OnPaint(int id, const void* buffer, int w, int h, const cef_rect_t* dirtyRects, size_t dirtyRectCount);
+    bool StartDragging(int browserId,
+        CefRefPtr<CefBrowser> browser,
+        CefRefPtr<CefDragData> dragData,
+        cef_drag_operations_mask_t allowedOps,
+        int x,
+        int y);
+    void UpdateDragCursor(int browserId, cef_drag_operations_mask_t operation);
 
     void RequestTextureClear(int id);
 
@@ -217,6 +230,24 @@ private:
     void RequestVisibleBrowsersRepaint();
     void SendExternalBeginFrames();
     void DispatchExternalBeginFramesOnUi();
+    void DispatchScreenFrameOnUi(std::shared_ptr<CapturedScreenFrame> frame);
+    bool HandleDragMouseMove(const CefMouseEvent& event);
+    bool HandleDragMouseUp(const CefMouseEvent& event);
+    void HandleDragMouseMoveOnUi(CefMouseEvent event);
+    void HandleDragMouseUpOnUi(CefMouseEvent event);
+    void CancelDrag(int browserId = -1);
+
+    struct MouseClickTracker
+    {
+        uint32_t lastDownTime = 0;
+        int lastDownX = 0;
+        int lastDownY = 0;
+        int sequenceCount = 0;
+        int activeCount = 1;
+        int browserId = -1;
+    };
+
+    int BeginMouseClick(MouseClickTracker& tracker, int browserId, int x, int y, bool explicitDoubleClick);
 
 private:
     bool initialized_ = false;
@@ -245,11 +276,32 @@ private:
     std::unordered_map<int, PendingPaint> pending_;
     std::atomic<bool> begin_frame_task_pending_{false};
 
+    struct DragState
+    {
+        int browserId = -1;
+        CefRefPtr<CefBrowser> browser;
+        CefRefPtr<CefDragData> data;
+        cef_drag_operations_mask_t allowedOps = DRAG_OPERATION_NONE;
+        cef_drag_operations_mask_t currentOperation = DRAG_OPERATION_NONE;
+        int lastX = 0;
+        int lastY = 0;
+        bool entered = false;
+    };
+
+    DragState drag_;
+    std::atomic<bool> drag_active_{false};
+    std::atomic<int> last_mouse_x_{0};
+    std::atomic<int> last_mouse_y_{0};
+    MouseClickTracker left_click_;
+    MouseClickTracker right_click_;
+    MouseClickTracker middle_click_;
+
     // Keyboard capture / filtering (client -> server)
     bool key_capture_enabled_ = false;
     std::bitset<256> key_allowed_{};
 
     std::unordered_map<int, PlayerStatsPollState> player_stats_poll_;
+    ScreenCaptureManager screen_capture_;
 
     // Native GTA SA ESC/pause menu handling
     EscapeMenuController escape_menu_;

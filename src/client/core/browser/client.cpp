@@ -154,6 +154,22 @@ void BrowserClient::OnPaint(CefRefPtr<CefBrowser> /*browser*/,
     manager_.OnPaint(browserId_, buffer, width, height, dirty_rects.data(), dirty_rects.size());
 }
 
+bool BrowserClient::StartDragging(CefRefPtr<CefBrowser> browser,
+                                  CefRefPtr<CefDragData> drag_data,
+                                  DragOperationsMask allowed_ops,
+                                  int x,
+                                  int y)
+{
+    CEF_REQUIRE_UI_THREAD();
+    return manager_.StartDragging(browserId_, browser, drag_data, allowed_ops, x, y);
+}
+
+void BrowserClient::UpdateDragCursor(CefRefPtr<CefBrowser> /*browser*/, DragOperation operation)
+{
+    CEF_REQUIRE_UI_THREAD();
+    manager_.UpdateDragCursor(browserId_, operation);
+}
+
 bool BrowserClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> /*browser*/,
                                              CefRefPtr<CefFrame> /*frame*/,
                                              CefProcessId /*source_process*/,
@@ -162,6 +178,26 @@ bool BrowserClient::OnProcessMessageReceived(CefRefPtr<CefBrowser> /*browser*/,
     CEF_REQUIRE_UI_THREAD();
 
     const std::string msg_name = message->GetName();
+
+    if (msg_name == "cef_screen_capture_start")
+    {
+        CefRefPtr<CefListValue> args = message->GetArgumentList();
+        const int width = args->GetSize() > 0 && args->GetType(0) == VTYPE_INT
+            ? args->GetInt(0) : 640;
+        const int height = args->GetSize() > 1 && args->GetType(1) == VTYPE_INT
+            ? args->GetInt(1) : 360;
+        const int fps = args->GetSize() > 2 && args->GetType(2) == VTYPE_INT
+            ? args->GetInt(2) : 15;
+
+        manager_.StartScreenCapture(browserId_, width, height, fps);
+        return true;
+    }
+
+    if (msg_name == "cef_screen_capture_stop")
+    {
+        manager_.StopScreenCapture(browserId_);
+        return true;
+    }
 
     if (msg_name == "emit_event")
     {
