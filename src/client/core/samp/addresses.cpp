@@ -27,7 +27,7 @@ void* SampAddresses::SampInitialization() const noexcept
         case SampVersion::V037R3:  
             return base_ + 0x0C57E2;
         case SampVersion::V037R5:  
-            return base_ + 0x0C57E2;
+            return base_ + 0x0C4F52;
         case SampVersion::V03DLR1: 
             return base_ + 0x0C6614;
         default: return nullptr;
