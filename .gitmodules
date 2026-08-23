@@ -12,7 +12,7 @@
 	url = https://github.com/BlastHackNet/SAMP-API
 [submodule "deps/samp-cmake"]
 	path = deps/samp-cmake
-	url = https://github.com/AmyrAhmady/samp-cmake-modules
+	url = https://github.com/dockfries/samp-cmake-modules
 [submodule "deps/samp-plugin-sdk"]
 	path = deps/samp-plugin-sdk
 	url = https://github.com/AmyrAhmady/samp-plugin-sdk

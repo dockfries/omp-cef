@@ -36,7 +36,8 @@ jobs:
           set -euo pipefail
 
           mkdir -p release-assets
-          mkdir -p package-samp/plugins
+          mkdir -p package-samp-x86/plugins
+          mkdir -p package-samp-x64/plugins
           mkdir -p package-omp-x86/components
           mkdir -p package-omp-x64/components
 
@@ -131,12 +132,6 @@ jobs:
             mv temp-assets/client-files-v${{ inputs.version }}/* release-assets/
           fi
 
-          if [[ -d "temp-assets/individual-files-v${{ inputs.version }}" ]]; then
-            mv temp-assets/individual-files-v${{ inputs.version }}/cef.asi release-assets/ || true
-            mv temp-assets/individual-files-v${{ inputs.version }}/cef/client.dll release-assets/ || true
-            mv temp-assets/individual-files-v${{ inputs.version }}/cef/renderer.exe release-assets/ || true
-          fi
-
           echo "Processing server files..."
           INCLUDE_FILE="src/server/cef.inc"
           if [[ ! -f "$INCLUDE_FILE" ]]; then
@@ -144,17 +139,26 @@ jobs:
             exit 1
           fi
 
-          cp "$INCLUDE_FILE" package-samp/cef.inc
+          cp "$INCLUDE_FILE" package-samp-x86/cef.inc
+          cp "$INCLUDE_FILE" package-samp-x64/cef.inc
           cp "$INCLUDE_FILE" package-omp-x86/cef.inc
           cp "$INCLUDE_FILE" package-omp-x64/cef.inc
 
           copy_required_file "temp-assets/server-ServerSamp-x86-Windows/cef.dll" \
-            "package-samp/plugins/cef.dll" \
+            "package-samp-x86/plugins/cef.dll" \
             "SA-MP Windows x86 plugin"
 
           copy_required_file "temp-assets/server-ServerSamp-x86-Linux/cef.so" \
-            "package-samp/plugins/cef.so" \
+            "package-samp-x86/plugins/cef.so" \
             "SA-MP Linux x86 plugin"
+
+          copy_required_file "temp-assets/server-ServerSamp-x64-Windows/cef.dll" \
+            "package-samp-x64/plugins/cef.dll" \
+            "SA-MP Windows x64 plugin"
+
+          copy_required_file "temp-assets/server-ServerSamp-x64-Linux/cef.so" \
+            "package-samp-x64/plugins/cef.so" \
+            "SA-MP Linux x64 plugin"
 
           copy_required_file "temp-assets/server-ServerOmp-x86-Windows/Cef.dll" \
             "package-omp-x86/components/Cef.dll" \
@@ -173,20 +177,24 @@ jobs:
             "open.mp Linux x64 component"
 
           echo "Validating packaged server binaries..."
-          assert_pe_machine "package-samp/plugins/cef.dll" "x86"
+          assert_pe_machine "package-samp-x86/plugins/cef.dll" "x86"
+          assert_pe_machine "package-samp-x64/plugins/cef.dll" "x64"
           assert_pe_machine "package-omp-x86/components/Cef.dll" "x86"
           assert_pe_machine "package-omp-x64/components/Cef.dll" "x64"
-          assert_elf_class "package-samp/plugins/cef.so" "ELF32"
+          assert_elf_class "package-samp-x86/plugins/cef.so" "ELF32"
+          assert_elf_class "package-samp-x64/plugins/cef.so" "ELF64"
           assert_elf_class "package-omp-x86/components/Cef.so" "ELF32"
           assert_elf_class "package-omp-x64/components/Cef.so" "ELF64"
 
           echo "Creating server archives..."
-          (cd package-samp && zip -r ../release-assets/cef-samp-v${{ inputs.version }}.zip .)
+          (cd package-samp-x86 && zip -r ../release-assets/cef-samp-v${{ inputs.version }}-x86.zip .)
+          (cd package-samp-x64 && zip -r ../release-assets/cef-samp-v${{ inputs.version }}-x64.zip .)
           (cd package-omp-x86 && zip -r ../release-assets/cef-omp-v${{ inputs.version }}-x86.zip .)
           (cd package-omp-x64 && zip -r ../release-assets/cef-omp-v${{ inputs.version }}-x64.zip .)
 
           echo "Validating final release archives..."
-          assert_zip_pe_machine "release-assets/cef-samp-v${{ inputs.version }}.zip" "plugins/cef.dll" "x86"
+          assert_zip_pe_machine "release-assets/cef-samp-v${{ inputs.version }}-x86.zip" "plugins/cef.dll" "x86"
+          assert_zip_pe_machine "release-assets/cef-samp-v${{ inputs.version }}-x64.zip" "plugins/cef.dll" "x64"
           assert_zip_pe_machine "release-assets/cef-omp-v${{ inputs.version }}-x86.zip" "components/Cef.dll" "x86"
           assert_zip_pe_machine "release-assets/cef-omp-v${{ inputs.version }}-x64.zip" "components/Cef.dll" "x64"
 

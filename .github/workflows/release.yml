@@ -55,6 +55,8 @@ jobs:
             arch: x64
           - target: ServerSamp
             arch: x86
+          - target: ServerSamp
+            arch: x64
     uses: ./.github/workflows/build-server-reusable.yml
     with:
       target: ${{ matrix.target }}

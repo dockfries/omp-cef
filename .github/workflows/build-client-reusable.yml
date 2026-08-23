@@ -103,12 +103,3 @@ jobs:
         with:
           name: client-files-v${{ inputs.version }}
           path: client-files-v${{ inputs.version }}.zip
-
-      - name: Upload Individual Files
-        uses: actions/upload-artifact@v4
-        with:
-          name: individual-files-v${{ inputs.version }}
-          path: |
-            package/cef/client.dll
-            package/cef/renderer.exe
-            package/cef.asi
