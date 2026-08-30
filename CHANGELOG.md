@@ -1,18 +1,3 @@
-## [unreleased]
-
-### 🐛 Bug Fixes
-
-- *(client)* Address for 037r5 - ([ca6571c](https://github.com/aurora-mp/omp-cef/commit/ca6571c58286899d7c3043efa4c5185efcb540d7))
-
-### 🤖 CI
-
-- Build and publish cef-samp for x86 and x64 - ([24da1de](https://github.com/aurora-mp/omp-cef/commit/24da1defb29535f47bcf6ea6c24338c0bcad19db))
-
-### 📦 Build
-
-- *(sampgdk)* Add x64 support - ([38226b5](https://github.com/aurora-mp/omp-cef/commit/38226b549762ef9390d4621c6bcfd0328d3e7912))
-
-
 ## [1.4.0](https://github.com/aurora-mp/omp-cef/compare/v1.3.0..v1.4.0) (2026-08-10)
 
 ### 🧹 Chore
