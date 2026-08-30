@@ -1,3 +1,26 @@
+
+## [1.4.1](https://github.com/aurora-mp/omp-cef/compare/v1.4.0..v1.4.1) (2026-08-30)
+
+### 📖 Documentation
+
+- Add zh-CN README and clean changelog - ([5814d78](https://github.com/aurora-mp/omp-cef/commit/5814d7823549648fcc54e9b71aac2d312b69ddff))
+- Fix duplicate changelog entries - ([ecc1d9c](https://github.com/aurora-mp/omp-cef/commit/ecc1d9c32dfc8233c82c8c88784b2f1e555fa9c9))
+
+### 🐛 Bug Fixes
+
+- *(client)* Address for 037r5 - ([ca6571c](https://github.com/aurora-mp/omp-cef/commit/ca6571c58286899d7c3043efa4c5185efcb540d7))
+
+### 🤖 CI
+
+- Build and publish cef-samp for x86 and x64 - ([24da1de](https://github.com/aurora-mp/omp-cef/commit/24da1defb29535f47bcf6ea6c24338c0bcad19db))
+
+### 📦 Build
+
+- *(sampgdk)* Update to 5.0.0 with fixes - ([cca43aa](https://github.com/aurora-mp/omp-cef/commit/cca43aa4668be7eb107e00bcbe3c70e7bb973e80))
+- *(sampgdk)* Add x64 support - ([38226b5](https://github.com/aurora-mp/omp-cef/commit/38226b549762ef9390d4621c6bcfd0328d3e7912))
+
+
+
 ## [1.4.0](https://github.com/aurora-mp/omp-cef/compare/v1.3.0..v1.4.0) (2026-08-10)
 
 ### 🧹 Chore
