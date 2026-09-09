@@ -25,3 +25,6 @@
 [submodule "deps/tiny-aes"]
 	path = deps/tiny-aes
 	url = https://github.com/kokke/tiny-AES-c
+[submodule "deps/sampgdk"]
+	path = deps/sampgdk
+	url = https://github.com/dockfries/sampgdk-backup.git

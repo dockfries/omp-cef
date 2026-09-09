@@ -17,7 +17,7 @@ jobs:
 
     steps:
       - name: Checkout code and submodules
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -62,7 +62,7 @@ jobs:
           echo "cmake_arch=$CMAKE_ARCH"                  >> "$GITHUB_OUTPUT"
 
       - name: Cache vcpkg + installed
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ${{ env.VCPKG_ROOT }}
@@ -98,6 +98,18 @@ jobs:
             --triplet "${{ steps.vars.outputs.triplet }}" \
             --feature-flags=manifests,binarycaching \
             --x-feature=server
+
+      # ServerSamp builds sampgdk (submodule), whose code generator needs python + ply.
+      - name: Install sampgdk codegen deps (Windows)
+        if: contains(steps.vars.outputs.option, 'SAMP')
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+
+      - name: pip install ply (Windows)
+        if: contains(steps.vars.outputs.option, 'SAMP')
+        shell: bash
+        run: python -m pip install ply
 
       - name: Configure CMake
         shell: bash
@@ -158,7 +170,7 @@ jobs:
           ls -la artifact-server
 
       - name: Upload Server Binary (Windows)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: server-${{ steps.vars.outputs.build_target }}-${{ inputs.arch }}-Windows
           path: artifact-server/*
@@ -208,7 +220,7 @@ jobs:
           /opt/cmake/bin/cmake --version 2>&1 | sed -n '1p'
 
       - name: Checkout code and submodules
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
 
@@ -250,7 +262,7 @@ jobs:
           echo "triplet=$TRIPLET"                        >> "$GITHUB_OUTPUT"
 
       - name: Cache vcpkg + installed
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ${{ env.VCPKG_ROOT }}
@@ -302,6 +314,18 @@ jobs:
             --feature-flags=manifests,binarycaching \
             --x-feature=server
 
+      # ServerSamp builds sampgdk (submodule), whose code generator needs python + ply.
+      - name: Install sampgdk codegen deps (Linux)
+        if: contains(steps.vars.outputs.option, 'SAMP')
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Container is ubuntu:20.04 running as root (no sudo needed);
+          # python3 is present but pip/ply are not.
+          apt-get update
+          apt-get install -y python3-pip
+          python3 -m pip install ply
+
       - name: Configure CMake
         shell: bash
         run: |
@@ -328,6 +352,7 @@ jobs:
             -DBUILD_SERVER_OMP=OFF \
             -DBUILD_SERVER_SAMP=OFF \
             -DBUILD_SERVER_${{ steps.vars.outputs.option }}=ON \
+            -DPYTHON_EXECUTABLE=$(command -v python3) \
             $EXTRA_ARGS
 
       - name: Build
@@ -383,7 +408,7 @@ jobs:
           ls -la artifact-server
 
       - name: Upload Server Binary (Linux)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: server-${{ steps.vars.outputs.build_target }}-${{ inputs.arch }}-Linux
           path: artifact-server/*

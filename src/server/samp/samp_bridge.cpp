@@ -1,8 +1,13 @@
 #include "samp_bridge.hpp"
 #include <common/encoding.hpp>
 
+#ifndef SAMPGDK_STATIC
 #define SAMPGDK_STATIC
-#include <sampgdk.h>
+#endif
+#include <sampgdk/core.h>
+#include <sampgdk/interop.h>
+#include <sampgdk/a_samp.h>
+#include <sampgdk/a_players.h>
 
 extern std::vector<AMX*> g_AmxList;
 

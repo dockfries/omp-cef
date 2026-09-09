@@ -15,11 +15,11 @@ jobs:
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { submodules: recursive }
 
       - name: Cache vcpkg (archives + installed)
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         id: cache-vcpkg
         with:
           path: |
@@ -99,7 +99,7 @@ jobs:
         run: Compress-Archive -Path package/* -DestinationPath client-files-v${{ inputs.version }}.zip -Force
 
       - name: Upload Client Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: client-files-v${{ inputs.version }}
           path: client-files-v${{ inputs.version }}.zip
