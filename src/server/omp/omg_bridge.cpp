@@ -47,6 +47,11 @@ void OmpPlatformBridge::CallPawnPublic(const std::string& name, const std::vecto
         if (script->FindPublic(name.c_str(), &idx) != AMX_ERR_NONE)
             return;
 
+        // String arguments are allotted on the script's heap and must be released
+        // by the caller once the public returns, as IPawnScript::CallChecked does.
+        // Releasing the heap top taken before the pushes frees all of them at once.
+        cell heap_before_push = script->GetHEA();
+
         for (auto it = args.rbegin(); it != args.rend(); ++it)
         {
             const auto& arg = *it;
@@ -72,6 +77,7 @@ void OmpPlatformBridge::CallPawnPublic(const std::string& name, const std::vecto
 
         cell retval;
         script->Exec(&retval, idx);
+        script->Release(heap_before_push);
     };
 
     call_on_script(pawn_->mainScript());
