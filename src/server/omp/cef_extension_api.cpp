@@ -84,6 +84,12 @@ public:
         if (api) api->SetBrowserVisible(playerid, browserid, visible);
     }
 
+    void setBrowserLayer(int playerid, int browserid, int layer) override
+    {
+        auto* api = CefApi::Instance();
+        if (api) api->SetBrowserLayer(playerid, browserid, layer);
+    }
+
     void destroyBrowser(int playerid, int browserid) override
     {
         auto* api = CefApi::Instance();

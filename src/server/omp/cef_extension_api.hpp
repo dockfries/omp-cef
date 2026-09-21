@@ -97,6 +97,10 @@ struct ICefComponent : public IExtension
     virtual void addEventHandler(ICefEventHandler* handler) = 0;
     virtual void removeEventHandler(ICefEventHandler* handler) = 0;
 
+    // Append new methods to preserve existing virtual method slots.
+    // Overlay2D / World2D: higher layers are drawn on top, independently of focus.
+    virtual void setBrowserLayer(int playerid, int browserid, int layer) = 0;
+
     void reset() override { /* CEF plugin has its own reset path */ }
 };
 

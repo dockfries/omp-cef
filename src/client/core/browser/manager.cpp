@@ -853,6 +853,30 @@ void BrowserManager::SetWorld2DBrowserPos(int id, float worldX, float worldY, fl
     instance->world2d.z = worldZ;
 }
 
+void BrowserManager::SetBrowserLayer(int id, int layer)
+{
+    if (!CefCurrentlyOn(TID_UI))
+    {
+        CefPostTask(TID_UI, base::BindOnce(&BrowserManager::SetBrowserLayer, base::Unretained(this), id, layer));
+        return;
+    }
+
+    auto* instance = GetBrowserInstance(id);
+    if (!instance || instance->closing)
+    {
+        LOG_WARN("[CEF] SetBrowserLayer: Could not find active browser with ID {}.", id);
+        return;
+    }
+
+    if (instance->mode == RenderMode::WorldObject3D)
+    {
+        LOG_WARN("[CEF] SetBrowserLayer: Browser {} is a WorldObject3D browser.", id);
+        return;
+    }
+
+    instance->layer.store(layer, std::memory_order_relaxed);
+}
+
 void BrowserManager::SetBrowserVisible(int id, bool visible)
 {
     if (CefCurrentlyOn(TID_UI) == false)
@@ -1510,13 +1534,28 @@ bool BrowserManager::RenderAll()
 
     bool any_visible = false;
 
+    struct RenderEntry
+    {
+        BrowserInstance* browser;
+        int layer;
+    };
+    std::vector<RenderEntry> render_order;
+    render_order.reserve(browsers_.size());
     for (auto& [id, browser] : browsers_)
     {
-        if (!browser)
-            continue;
+        if (browser && browser->visible && !browser->closing && browser->mode != RenderMode::WorldObject3D)
+            render_order.push_back({browser.get(), browser->layer.load(std::memory_order_relaxed)});
+    }
 
-        if (!browser->visible)
-            continue;
+    // Snapshot layers before sorting so concurrent updates cannot change the comparator.
+    // Equal layers use browser IDs, making draw order independent of unordered_map layout.
+    std::sort(render_order.begin(), render_order.end(), [](const RenderEntry& a, const RenderEntry& b) {
+        return a.layer != b.layer ? a.layer < b.layer : a.browser->id < b.browser->id;
+    });
+
+    for (const auto& entry : render_order)
+    {
+        auto* browser = entry.browser;
 
         // Overlay2D
         if (browser->mode == RenderMode::Overlay2D)

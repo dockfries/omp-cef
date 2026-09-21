@@ -221,6 +221,23 @@ native CEF_SetWorld2DBrowserPos(playerid, browserid, Float:worldX, Float:worldY,
 native CEF_SetBrowserVisible(playerid, browserid, bool:visible);
 
 /**
+ * Sets the drawing layer of an Overlay2D or World2D browser for a player.
+ *
+ * Higher layers are drawn on top. The default is 0; negative layers are allowed.
+ * On equal layers, the higher browser ID is drawn on top.
+ * This changes visual order only: focus, input and visibility remain independent.
+ * The layer survives hide/show, reload and navigation, and resets on recreation.
+ * May be called immediately after CEF_CreateBrowser / CEF_CreateWorld2DBrowser,
+ * including while resources are downloading. Unknown IDs and WorldObject3D
+ * browsers are ignored by the client.
+ *
+ * @param playerid      The ID of the player.
+ * @param browserid     The browser ID whose layer will change.
+ * @param layer         Signed drawing layer (higher values appear on top).
+ */
+native CEF_SetBrowserLayer(playerid, browserid, layer);
+
+/**
  * Destroys a browser instance for a specific player.
  *
  * @param playerid          The ID of the player.
