@@ -4,6 +4,7 @@
 #include "network/network_manager.hpp"
 
 #include <string>
+#include <mutex>
 #include <vector>
 
 class BrowserManager;
@@ -23,6 +24,7 @@ public:
 
         bool focused = false;
         bool controls_chat = false;
+        int layer = 0;
         float width = -1.f;
         float height = -1.f;
 
@@ -94,6 +96,7 @@ private:
     int connected_game_port_ = 0;
 
     bool flushed_once_ = false;
+    std::mutex pending_creates_mutex_;
     std::vector<PendingCreate> pending_creates_;
     std::vector<PendingEmit> pending_emits_;
 

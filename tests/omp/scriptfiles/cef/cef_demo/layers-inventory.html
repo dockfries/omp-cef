@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>CEF layers - inventory</title>
+  <style>
+    html, body { margin: 0; background: transparent; font-family: Arial, sans-serif; color: #edf2fa; }
+    main { position: absolute; top: 20vh; left: 25vw; width: 50vw; height: 60vh; box-sizing: border-box; padding: 28px; background: #172337; border: 2px solid #4e739f; border-radius: 16px; }
+    h1 { margin: 0 0 12px; }
+    input, button { padding: 12px; border: 0; border-radius: 6px; font-size: 16px; }
+    input { width: 70%; }
+    button { margin-top: 16px; cursor: pointer; background: #85bfff; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Inventory - layer 100</h1>
+    <p>The notification overlaps this panel when its layer is higher.</p>
+    <p>Use /ceflayersfocus to test input while the notification stays above.</p>
+    <input aria-label="Search inventory" placeholder="Search inventory...">
+    <p><button id="item">Use item (0)</button></p>
+    <button id="release">Release focus (Escape)</button>
+  </main>
+  <script>
+    let count = 0;
+    document.querySelector('#item').onclick = event => { event.target.textContent = `Use item (${++count})`; };
+    const release = () => { if (window.cef) cef.set_focus(false); };
+    document.querySelector('#release').onclick = release;
+    document.addEventListener('keydown', event => { if (event.key === 'Escape') release(); });
+  </script>
+</body>
+</html>

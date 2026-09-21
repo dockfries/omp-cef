@@ -90,7 +90,10 @@ void App::Initialize()
 void App::ResetSession()
 {
     // Clear pending actions
-    pending_creates_.clear();
+    {
+        std::lock_guard<std::mutex> lock(pending_creates_mutex_);
+        pending_creates_.clear();
+    }
     pending_emits_.clear();
     flushed_once_ = false;
     pending_clear_chat_ = false;
@@ -113,11 +116,14 @@ void App::FlushPendingIfReady()
     {
         flushed_once_ = true;
         network_.SendPacket(PacketType::DownloadComplete, {});
+        std::lock_guard<std::mutex> lock(pending_creates_mutex_);
         LOG_DEBUG("[CEF] Resources completed -> flushing pending creates={}, emits={}.", (int)pending_creates_.size(), (int)pending_emits_.size());
     }
 
-    if (!pending_creates_.empty())
     {
+        // Serialize queue draining and UI task posting with network layer updates.
+        // Otherwise a layer update could overtake its browser's creation task.
+        std::lock_guard<std::mutex> lock(pending_creates_mutex_);
         std::vector<PendingCreate> creates;
         creates.swap(pending_creates_);
 
@@ -135,6 +141,8 @@ void App::FlushPendingIfReady()
             {
                 browser_.CreateWorld2DBrowser(crate.id, crate.url, crate.worldX, crate.worldY, crate.worldZ, crate.width, crate.height, crate.offsetZ, crate.pivotX, crate.pivotY);
             }
+            if (crate.kind != PendingCreate::Kind::World)
+                browser_.SetBrowserLayer(crate.id, crate.layer);
         }
     }
 
@@ -298,6 +306,7 @@ void App::Tick()
 
 void App::RemovePendingCreate(int id)
 {
+    std::lock_guard<std::mutex> lock(pending_creates_mutex_);
     pending_creates_.erase(
         std::remove_if(pending_creates_.begin(), pending_creates_.end(),
             [id](const PendingCreate& pending_create) { 
@@ -307,6 +316,7 @@ void App::RemovePendingCreate(int id)
 
 void App::QueueOrCreateOverlay(int id, const std::string& url, bool focused, bool controls_chat, float width, float height)
 {
+    std::lock_guard<std::mutex> lock(pending_creates_mutex_);
     if (!ResourcesReady())
     {
         PendingCreate pending_create;
@@ -328,6 +338,7 @@ void App::QueueOrCreateOverlay(int id, const std::string& url, bool focused, boo
 
 void App::QueueOrCreateWorld(int id, const std::string& url, const std::string& textureName, float width, float height)
 {
+    std::lock_guard<std::mutex> lock(pending_creates_mutex_);
     if (!ResourcesReady())
     {
         PendingCreate pending_create;
@@ -348,6 +359,7 @@ void App::QueueOrCreateWorld(int id, const std::string& url, const std::string& 
 
 void App::QueueOrCreateWorld2D(int id, const std::string& url, float worldX, float worldY, float worldZ, float width, float height, float offsetZ, float pivotX, float pivotY)
 {
+    std::lock_guard<std::mutex> lock(pending_creates_mutex_);
     if (!ResourcesReady())
     {
         PendingCreate pending_create;
@@ -437,6 +449,23 @@ void App::OnPacketReceived(const NetworkPacket& packet)
                 bool visible = event.args[1].boolValue;
 
                 browser_.SetBrowserVisible(id, visible);
+            }
+            else if (event.name == CefEvent::Server::SetBrowserLayer && event.args.size() == 2 &&
+                event.args[0].type == ArgumentType::Integer && event.args[1].type == ArgumentType::Integer) {
+                const int id = event.args[0].intValue;
+                const int layer = event.args[1].intValue;
+                std::lock_guard<std::mutex> lock(pending_creates_mutex_);
+                bool pending = false;
+                for (auto& create : pending_creates_)
+                {
+                    if (create.id == id)
+                    {
+                        create.layer = layer;
+                        pending = true;
+                    }
+                }
+                if (!pending)
+                    browser_.SetBrowserLayer(id, layer);
             }
             else if (event.name == CefEvent::Server::DestroyBrowser && event.args.size() >= 1) {
                 const int id = event.args[0].intValue;
