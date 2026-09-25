@@ -22,6 +22,12 @@ set_target_properties(libcef_dll_wrapper PROPERTIES
     MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>"
 )
 
+# CEF clears the default CMake release flags. Consumers must use the same
+# DCHECK configuration as the wrapper to keep CEF base classes ABI-compatible.
+target_compile_definitions(libcef_dll_wrapper INTERFACE
+    "$<$<CONFIG:Release>:${CEF_COMPILER_DEFINES_RELEASE}>"
+)
+
 ADD_LOGICAL_TARGET("libcef_lib" "${CEF_LIB_DEBUG}" "${CEF_LIB_RELEASE}")
 
 if (NOT TARGET libcef_dll_wrapper OR NOT TARGET libcef_lib)

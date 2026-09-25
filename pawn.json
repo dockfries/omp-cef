@@ -1,7 +1,7 @@
 {
-  "user": "aurora-mp",
+  "user": "dockfries",
   "repo": "omp-cef",
-  "website": "https://github.com/aurora-mp/omp-cef",
+  "website": "https://github.com/dockfries/omp-cef",
   "preset": "openmp",
   "include_path": "src/server",
   "resources": [
