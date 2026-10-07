@@ -10,7 +10,8 @@ struct ICefOmpComponent : IComponent
 
 class CefOmpComponent final : public ICefOmpComponent,
                               public PawnEventHandler,
-                              public PlayerConnectEventHandler
+                              public PlayerConnectEventHandler,
+                              public CoreEventHandler
 {
 public:
     StringView componentName() const override;
@@ -34,6 +35,8 @@ public:
     void onPlayerConnect(IPlayer& player) override;
     void onPlayerClientInit(IPlayer& player) override;
     void onPlayerDisconnect(IPlayer& player, PeerDisconnectReason reason) override;
+
+    void onTick(Microseconds elapsed, TimePoint now) override;
 
 private:
     static constexpr uint16_t cef_network_port_offset = 2;

@@ -80,7 +80,7 @@ namespace
 
 PLUGIN_EXPORT unsigned int PLUGIN_CALL Supports()
 {
-    return sampgdk::Supports() | SUPPORTS_VERSION | SUPPORTS_AMX_NATIVES;
+    return sampgdk::Supports() | SUPPORTS_VERSION | SUPPORTS_AMX_NATIVES | SUPPORTS_PROCESS_TICK;
 }
 
 PLUGIN_EXPORT bool PLUGIN_CALL Load(void** ppData)
@@ -124,6 +124,12 @@ PLUGIN_EXPORT bool PLUGIN_CALL Load(void** ppData)
     LOG_INFO("Plugin loaded (v%d.%d.%d)", VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH);
 
     return true;
+}
+
+PLUGIN_EXPORT void PLUGIN_CALL ProcessTick()
+{
+    if (plugin_)
+        plugin_->Poll();
 }
 
 PLUGIN_EXPORT void PLUGIN_CALL Unload()
