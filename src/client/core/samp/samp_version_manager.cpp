@@ -3,6 +3,46 @@
 
 #include <vector>
 
+namespace
+{
+    struct KnownSampBuild
+    {
+        DWORD timestamp;
+        DWORD sizeOfImage;
+        SampVersion version;
+    };
+
+    constexpr KnownSampBuild kKnownSampBuilds[] = {
+        { 0x5542F47A, 0x330000, SampVersion::V037 },
+        { 0x5C0B4243, 0x27E000, SampVersion::V037R3 },
+        { 0x6372C39E, 0x27E000, SampVersion::V037R5 },
+        { 0x5A6A3130, 0x2BE000, SampVersion::V03DLR1 },
+    };
+
+    SampVersion DetectByPeHeader(HMODULE module, DWORD& timestamp, DWORD& sizeOfImage)
+    {
+        const auto* base = reinterpret_cast<const BYTE*>(module);
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+            return SampVersion::Unknown;
+
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS32*>(base + dos->e_lfanew);
+        if (nt->Signature != IMAGE_NT_SIGNATURE)
+            return SampVersion::Unknown;
+
+        timestamp = nt->FileHeader.TimeDateStamp;
+        sizeOfImage = nt->OptionalHeader.SizeOfImage;
+
+        for (const auto& build : kKnownSampBuilds)
+        {
+            if (build.timestamp == timestamp && build.sizeOfImage == sizeOfImage)
+                return build.version;
+        }
+
+        return SampVersion::Unknown;
+    }
+}
+
 bool SampVersionManager::Initialize()
 {
     while ((_sampModule = ::GetModuleHandleA("samp.dll")) == nullptr)
@@ -14,6 +54,17 @@ bool SampVersionManager::Initialize()
         _version = SampVersion::Unknown;
         return false;
     }
+
+    DWORD timestamp = 0;
+    DWORD sizeOfImage = 0;
+    _version = DetectByPeHeader(_sampModule, timestamp, sizeOfImage);
+    if (_version != SampVersion::Unknown)
+    {
+        LOG_INFO("Detected SA-MP version : {} (PE signature)", GetVersionString());
+        return true;
+    }
+
+    LOG_DEBUG("SA:MP PE signature not recognized (timestamp=0x{:08X}, size=0x{:X}), falling back to version info.", timestamp, sizeOfImage);
 
     wchar_t path[MAX_PATH]{};
     if (GetModuleFileNameW(_sampModule, path, MAX_PATH) == 0)
