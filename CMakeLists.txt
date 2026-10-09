@@ -19,6 +19,12 @@ endif()
 if (MSVC)
 	# /MT (Release) and /MTd (Debug) - consistent with x86-windows-static triplet.
 	set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+	# Read sources as UTF-8 and emit narrow string literals as UTF-8. Without this
+	# a source file that has no BOM is decoded with the machine's ANSI code page,
+	# so the same file could compile differently per machine; it also keeps the
+	# Windows build byte-identical to the Linux one.
+	add_compile_options(/utf-8)
 endif()
 
 list(APPEND CMAKE_MODULE_PATH
