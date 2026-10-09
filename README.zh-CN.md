@@ -4,7 +4,7 @@
 
 ![Version](https://img.shields.io/github/v/release/dockfries/omp-cef?include_prereleases&label=version)
 ![License](https://img.shields.io/github/license/dockfries/omp-cef)
-[![Wiki](https://img.shields.io/badge/docs-wiki-blue)](https://github.com/dockfries/omp-cef/wiki)
+[![Wiki](https://img.shields.io/badge/docs-wiki-blue)](https://github.com/aurora-mp/omp-cef/wiki)
 ![CEF](https://img.shields.io/badge/CEF-148.0.10-blue)
 ![SA--MP](https://img.shields.io/badge/SA--MP-0.3.7%20%7C%200.3.DL-orange)
 ![open.mp](https://img.shields.io/badge/open.mp-supported-brightgreen)
@@ -32,7 +32,7 @@
 
 完整文档可在 GitHub Wiki 中查看:
 
-https://github.com/dockfries/omp-cef/wiki
+https://github.com/aurora-mp/omp-cef/wiki
 
 ## 支持的客户端
 
@@ -67,7 +67,7 @@ CMakePresets.json  # CMake 预设(VS/CMake 的配置/构建预设)
 
 构建要求和详细的搭建说明记录在 wiki 中:
 
-https://github.com/dockfries/omp-cef/wiki
+https://github.com/aurora-mp/omp-cef/wiki
 
 简要版本:
 

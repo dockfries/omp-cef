@@ -4,7 +4,7 @@
 
 ![Version](https://img.shields.io/github/v/release/dockfries/omp-cef?include_prereleases&label=version)
 ![License](https://img.shields.io/github/license/dockfries/omp-cef)
-[![Wiki](https://img.shields.io/badge/docs-wiki-blue)](https://github.com/dockfries/omp-cef/wiki)
+[![Wiki](https://img.shields.io/badge/docs-wiki-blue)](https://github.com/aurora-mp/omp-cef/wiki)
 ![CEF](https://img.shields.io/badge/CEF-148.0.10-blue)
 ![SA--MP](https://img.shields.io/badge/SA--MP-0.3.7%20%7C%200.3.DL-orange)
 ![open.mp](https://img.shields.io/badge/open.mp-supported-brightgreen)
@@ -33,7 +33,7 @@ Client/server CEF plugin for **open.mp** and **SA-MP**.
 
 The full documentation is available in the GitHub Wiki:
 
-https://github.com/dockfries/omp-cef/wiki
+https://github.com/aurora-mp/omp-cef/wiki
 
 ## Supported clients
 
@@ -68,7 +68,7 @@ CMakePresets.json  # CMake presets (configure/build presets for VS/CMake)
 
 Build requirements and detailed setup instructions are documented in the wiki:
 
-https://github.com/dockfries/omp-cef/wiki
+https://github.com/aurora-mp/omp-cef/wiki
 
 Short version:
 
