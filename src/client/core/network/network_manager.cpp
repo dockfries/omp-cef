@@ -445,15 +445,20 @@ void NetworkManager::DoKcpUpdate()
 }
 
 void NetworkManager::SendRaw(const char* data, int size) {
+	// The socket belongs to the io thread: every Asio operation is posted there, so callers on the
+	// game thread (SendPacket, SendBrowserCreateResult, ...) can never touch the socket directly.
 	auto buffer = std::make_shared<std::vector<char>>(data, data + size);
-	socket_.async_send_to(
-		asio::buffer(*buffer), server_endpoint_,
-		[this, buffer, size](std::error_code ec, std::size_t) {
-			if (ec) {
-				LOG_ERROR("[CLIENT] UDP send error: {}", ec.message());
+
+	asio::post(io_context_, [this, buffer, size]() {
+		socket_.async_send_to(
+			asio::buffer(*buffer), server_endpoint_,
+			[this, buffer, size](std::error_code ec, std::size_t) {
+				if (ec) {
+					LOG_ERROR("[CLIENT] UDP send error: {}", ec.message());
+				}
 			}
-		}
-	);
+		);
+	});
 }
 
 void NetworkManager::SetPacketHandler(PacketHandler handler) 
