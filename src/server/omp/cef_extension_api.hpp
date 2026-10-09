@@ -50,7 +50,7 @@ struct ICefComponent : public IExtension
     virtual void setBrowserVisible(int playerid, int browserid, bool visible) = 0;
     virtual void destroyBrowser(int playerid, int browserid) = 0;
 
-    // Events (server → JS and JS → server).
+    // Events (server -> JS and JS -> server).
     // types[] is a list of CefArgType, one per expected argument in the event.
     virtual void registerEvent(const char* name, const char* callback,
         int typeCount, const CefArgType* types) = 0;

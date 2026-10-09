@@ -1,4 +1,4 @@
-﻿#include "scheme_handler.hpp"
+#include "scheme_handler.hpp"
 #include "system/resource_manager.hpp"
 #include "include/wrapper/cef_helpers.h"
 #include "include/cef_parser.h"
@@ -51,7 +51,7 @@ static std::string GetInternalLoadingHtml()
 
                         <div class="row justify-content-end">
                             <div id="speed">0 KB/s</div>
-                            <!--<div id="eta">—</div>-->
+                            <!--<div id="eta">&mdash;</div>-->
                         </div>
                     </div>
                 </div>
@@ -109,22 +109,22 @@ static std::string GetInternalLoadingHtml()
                     window.__ompcef = {
                         manifest: (files, bytes) => {
                         total = bytes|0;
-                        elSub.textContent = `${files} fichier(s) • ${fmtBytes(total)}`;
+                        elSub.textContent = `${files} fichier(s) \u2022 ${fmtBytes(total)}`;
                     },
                     progress: (fileName, fileReceived, fileTotal, overallReceived, overallTotal) => {
                         got = overallReceived|0;
                         total = overallTotal|0;
                         targetPct = total ? (got/total)*100 : 0;
 
-                        elFile.textContent = fileName || '—';
-                        elSub.textContent = `${fmtBytes(fileReceived)} / ${fmtBytes(fileTotal)} • Total ${fmtBytes(got)} / ${fmtBytes(total)}`;
+                        elFile.textContent = fileName || '\u2014';
+                        elSub.textContent = `${fmtBytes(fileReceived)} / ${fmtBytes(fileTotal)} \u2022 Total ${fmtBytes(got)} / ${fmtBytes(total)}`;
                     },
                     done: () => {
                         got = total;
                         targetPct = 100;
                             elFile.textContent = 'Done';
                             elSub.textContent = 'Loading ...';
-                            //elEta.textContent = '—';
+                            //elEta.textContent = '\u2014';
                         }
                     };
                 </script>
