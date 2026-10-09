@@ -1186,6 +1186,16 @@ void BrowserManager::PublishSnapshot()
             next->browsers.push_back(instance);
     }
 
+    next->entities.reserve(entityToBrowserId_.size());
+    for (const auto& [entity, id] : entityToBrowserId_)
+    {
+        auto it = browsers_.find(id);
+        if (it == browsers_.end() || !it->second)
+            continue;
+
+        next->entities.push_back({ entity, it->second, it->second->renderer });
+    }
+
     std::lock_guard<std::mutex> lock(snapshot_mutex_);
     snapshot_ = std::move(next);
 }
@@ -1355,6 +1365,7 @@ void BrowserManager::AttachBrowserToObject(int browserId, int objectId)
     if (CEntity* nativeEntity = GetEntityFromObjectId(objectId))
     {
         entityToBrowserId_[nativeEntity] = browserId;
+        PublishSnapshot();
         audio_.SetStreamMuted(browserId, false); // unmute when attached
 
         LOG_DEBUG("[CEF] Browser {} attached to object {} (Entity: {})", browserId, objectId, (const void*)nativeEntity);
@@ -1382,6 +1393,7 @@ void BrowserManager::ProcessPendingAttaches()
         if (CEntity* nativeEntity = GetEntityFromObjectId(objectId))
         {
             entityToBrowserId_[nativeEntity] = browserId;
+            PublishSnapshot();
             audio_.SetStreamMuted(browserId, false); // unmute when attached
 
             LOG_DEBUG("[CEF] Browser {} attached to object {} (Entity: {})", browserId, objectId, (const void*)nativeEntity);
@@ -1410,14 +1422,13 @@ void BrowserManager::DetachBrowserFromObject(int browserId, int objectId)
             // Restore the swapped texture on the render thread: RestoreTexture() writes
             // RenderWare material pointers, which must not happen while the game thread is
             // rendering this very entity.
-            auto wrIt = worldRenderers_.find(browserId);
-            if (wrIt != worldRenderers_.end() && wrIt->second)
-            {
-                std::shared_ptr<WorldRenderer> renderer = wrIt->second;
+            auto* detachInstance = GetBrowserInstance(browserId);
+            std::shared_ptr<WorldRenderer> renderer = detachInstance ? detachInstance->renderer : nullptr;
+            if (renderer)
                 gta_.PostToMainThread([renderer]() { LOG_DEBUG("[TRACE] 7 restore tex enter"); renderer->RestoreTexture(); LOG_DEBUG("[TRACE] 7 restore tex exit"); });
-            }
 
             entityToBrowserId_.erase(it);
+            PublishSnapshot();
             audio_.SetStreamMuted(browserId, true); // mute when detached
             LOG_DEBUG("[CEF] Browser {} detached from object {} (Entity: {})",
                       browserId,
@@ -1959,33 +1970,32 @@ void BrowserManager::OnBeforeEntityRender(CEntity* entity)
     if (ShouldSkipBrowserRendering())
         return;
 
-    auto it = entityToBrowserId_.find(entity);
-    if (it == entityToBrowserId_.end())
+    const auto snapshot = Snapshot();
+
+    for (const auto& binding : snapshot->entities)
+    {
+        if (binding.entity != entity || !binding.instance || !binding.renderer)
+            continue;
+
+        if (!binding.instance->visible)
+            return;
+
+        binding.renderer->SwapTexture(entity);
         return;
-
-    const int browserId = it->second;
-
-    auto* browser = GetBrowserInstance(browserId);
-    if (!browser || !browser->visible)
-        return;
-
-    auto wrIt = worldRenderers_.find(browserId);
-    if (wrIt == worldRenderers_.end() || !wrIt->second)
-        return;
-
-    wrIt->second->SwapTexture(entity);
+    }
 }
 
 void BrowserManager::OnAfterEntityRender(CEntity* entity)
 {
-    auto it = entityToBrowserId_.find(entity);
-    if (it == entityToBrowserId_.end())
-        return;
-    int browserId = it->second;
-    auto wrIt = worldRenderers_.find(browserId);
-    if (wrIt != worldRenderers_.end())
+    const auto snapshot = Snapshot();
+
+    for (const auto& binding : snapshot->entities)
     {
-        wrIt->second->RestoreTexture();
+        if (binding.entity == entity && binding.renderer)
+        {
+            binding.renderer->RestoreTexture();
+            return;
+        }
     }
 }
 

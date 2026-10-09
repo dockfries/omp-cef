@@ -113,9 +113,18 @@ struct BrowserInstance
 
 // Immutable list of the live browsers, rebuilt by the CEF UI thread after every change to the map.
 // The render thread reads this instead of browsers_ so the containers stay single-writer.
+// One browser attached to a game object: the render thread swaps this object's texture.
+struct EntityBinding
+{
+    CEntity* entity = nullptr;
+    std::shared_ptr<BrowserInstance> instance;
+    std::shared_ptr<WorldRenderer> renderer;
+};
+
 struct RenderSnapshot
 {
     std::vector<std::shared_ptr<BrowserInstance>> browsers;
+    std::vector<EntityBinding> entities;
 };
 
 class BrowserManager
