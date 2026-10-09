@@ -75,6 +75,7 @@ private:
     void FlushPendingIfReady();
     
     void RemovePendingCreate(int id);
+    void FailPendingCreates(const char* reason);
     void RemovePendingEmits(int browserId);
     void QueueOrCreateOverlay(int id, const std::string& url, bool focused, bool controls_chat, float width, float height);
     void QueueOrCreateWorld(int id, const std::string& url, const std::string& textureName, float width, float height);

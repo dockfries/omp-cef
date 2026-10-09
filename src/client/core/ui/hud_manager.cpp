@@ -81,6 +81,26 @@ void HudManager::ApplyToggle(EHudComponent component, bool toggle)
     }
 }
 
+// The class selection object lives inside the SA-MP client image, so the pointer read from it
+// cannot be trusted: confirm the page is committed and writable before touching it. A bad write
+// here is an access violation, not a C++ exception, so try/catch cannot catch it.
+static bool IsWritablePointer(const void* pointer, size_t bytes)
+{
+    if (!pointer)
+        return false;
+
+    MEMORY_BASIC_INFORMATION info{};
+    if (::VirtualQuery(pointer, &info, sizeof(info)) == 0)
+        return false;
+
+    if (info.State != MEM_COMMIT || (info.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0)
+        return false;
+
+    const auto start = reinterpret_cast<uintptr_t>(pointer);
+    const auto end = reinterpret_cast<uintptr_t>(info.BaseAddress) + info.RegionSize;
+    return start + bytes <= end;
+}
+
 void HudManager::ApplyClassSelectionVisible(bool visible)
 {
     const auto version = SampAddresses::Instance().Version();
@@ -125,6 +145,7 @@ void HudManager::ApplyClassSelectionVisible(bool visible)
             return;
 
         auto* pVisibilityFlag = reinterpret_cast<uint8_t*>(pClassSelection + flag_offset);
+        if (!IsWritablePointer(pVisibilityFlag, sizeof(uint8_t)))         {             LOG_WARN("[HudManager] Class selection object is not ready ({}) - visibility patch skipped.",                 reinterpret_cast<void*>(pClassSelection));             return;         } 
         *pVisibilityFlag = visible ? 1 : 0;
 
         LOG_DEBUG("[HudManager] Class selection visibility set to {}.", visible ? 1 : 0);

@@ -166,8 +166,54 @@ void ResourceManager::TriggerDownload()
 	}
 }
 
+void ResourceManager::SetFailureHandler(std::function<void(const char*)> handler)
+{
+	on_failed_ = std::move(handler);
+}
+
+void ResourceManager::Fail(const char* reason)
+{
+	state_ = DownloadState::FAILED;
+	LOG_ERROR("[ResourceManager] Resources unavailable: {}", reason);
+
+	if (on_failed_)
+		on_failed_(reason);
+}
+
+void ResourceManager::Update(uint64_t nowMs)
+{
+	const auto state = state_.load();
+
+	if (state != last_observed_state_)
+	{
+		last_observed_state_ = state;
+		state_since_ms_ = nowMs;
+	}
+
+	if (state == DownloadState::FAILED || state == DownloadState::COMPLETED || state == DownloadState::IDLE)
+		return;
+
+	if (state == DownloadState::AWAITING_TRIGGER && !server_manifest_.empty() && master_key_.size() >= 16)
+	{
+		TriggerDownload();
+		return;
+	}
+
+	if (state == DownloadState::AWAITING_TRIGGER)
+	{
+		if (state_since_ms_ && nowMs - state_since_ms_ > 10000)
+			Fail("server config never arrived");
+		return;
+	}
+
+	const auto last = std::chrono::duration_cast<std::chrono::milliseconds>(last_packet_time_.time_since_epoch()).count();
+	if (last != 0 && nowMs > static_cast<uint64_t>(last) && nowMs - static_cast<uint64_t>(last) > 15000)
+		Fail("download stalled");
+}
+
 void ResourceManager::OnFileData(const FileDataPacket& packet)
 {
+	last_packet_time_ = std::chrono::steady_clock::now();
 	if (state_ != DownloadState::DOWNLOADING) {
 		LOG_WARN("[ResourceManager] Received FileData in wrong state: {}", static_cast<int>(state_.load()));
 		return;

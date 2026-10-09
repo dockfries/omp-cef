@@ -73,7 +73,7 @@ private:
 
 	std::atomic<ConnectionState> state_{ ConnectionState::DISCONNECTED };
 	std::atomic<bool> running_{ false };
-	int playerid_ = -1;
+	std::atomic<int> playerid_{ -1 };
 
 	asio::io_context io_context_;
 	asio::ip::udp::socket socket_{ io_context_ };
@@ -96,7 +96,7 @@ private:
 	PacketHandler packet_handler_;
 	std::mutex handler_mutex_;
 
-	int join_attempts_ = 0;
+	std::atomic<int> join_attempts_{ 0 };
 	static constexpr int MAX_JOIN_ATTEMPTS = 5;
 
 	std::atomic<bool> non_cef_server_{ false };

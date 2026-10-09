@@ -63,6 +63,20 @@ struct World2DBrowserData
     float pivotY = 1.0f;
 };
 
+struct PendingPaint
+{
+    std::mutex mutex;
+    std::vector<uint8_t> pixels;
+    std::vector<cef_rect_t> dirty_rects;
+    int width = 0;
+    int height = 0;
+    bool ready = false;
+    uint64_t tick = 0;
+
+    void Clear();
+};
+
+
 // Holds all data and state related to a single browser instance
 struct BrowserInstance
 {
@@ -91,18 +105,27 @@ struct BrowserInstance
     CefRefPtr<CefClient> devtools_client;
     CefRefPtr<CefBrowser> devtools_browser;
 
+    std::shared_ptr<WorldRenderer> renderer;
+    PendingPaint pending;
+
     explicit BrowserInstance(int id) : id(id), view(id) {}
 };
 
-struct PendingPaint
+// Immutable list of the live browsers, rebuilt by the CEF UI thread after every change to the map.
+// The render thread reads this instead of browsers_ so the containers stay single-writer.
+// One browser attached to a game object: the render thread swaps this object's texture.
+struct EntityBinding
 {
-    std::mutex mutex;
-    std::vector<uint8_t> pixels;
-    std::vector<cef_rect_t> dirty_rects;
-    int width = 0;
-    int height = 0;
-    bool ready = false;
-    uint64_t tick = 0;
+    CEntity* entity = nullptr;
+    std::shared_ptr<BrowserInstance> instance;
+    std::shared_ptr<WorldRenderer> renderer;
+};
+
+struct RenderSnapshot
+{
+    std::vector<std::shared_ptr<BrowserInstance>> browsers;
+    std::vector<EntityBinding> entities;
+    std::vector<std::shared_ptr<WorldRenderer>> renderers;
 };
 
 class BrowserManager
@@ -293,13 +316,20 @@ private:
     // D3D/RenderWare resources and must be destroyed on the game (render) thread, so the
     // entries are handed over instead of being destroyed in place - see ReleaseOnMainThread.
     std::unordered_map<int, std::shared_ptr<BrowserInstance>> browsers_;
-    std::unordered_map<int, std::shared_ptr<WorldRenderer>> worldRenderers_;
     std::unordered_map<CEntity*, int> entityToBrowserId_;
     std::vector<std::pair<int, int>> pending_attaches_;
+
+    // Never null: the render thread reads it before the first publish.
+    std::shared_ptr<const RenderSnapshot> snapshot_ = std::make_shared<const RenderSnapshot>();
+    mutable std::mutex snapshot_mutex_;
+
+    void PublishSnapshot();
+    std::shared_ptr<const RenderSnapshot> Snapshot() const;
 
     // Drops the last reference to a D3D owning object inside a main-thread task, so the
     // texture is released on the render thread. The game's D3D device is not created with
     // D3DCREATE_MULTITHREADED, so releasing textures from the CEF UI thread is UB.
+    void SetWorldRendererOnUi(int id, std::shared_ptr<WorldRenderer> renderer);
     void ReleaseOnMainThread(std::shared_ptr<void> resource);
     void ReleaseBrowserResources(int id, BrowserInstance& instance);
 
@@ -314,7 +344,6 @@ private:
 
     std::function<CEntity*(int)> entity_resolver_{};
 
-    std::unordered_map<int, PendingPaint> pending_;
     std::atomic<bool> begin_frame_task_pending_{false};
 
     struct DragState

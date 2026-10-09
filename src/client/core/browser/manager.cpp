@@ -766,6 +766,7 @@ void BrowserManager::CreateBrowserInternal(
     instance->controls_chat_input = controls_chat;
 
     browsers_[id] = std::move(instance);
+    PublishSnapshot();
 
     gta_.PostToMainThread([this, id, width, height]() {
         auto* inst = GetBrowserInstance(id);
@@ -859,6 +860,7 @@ void BrowserManager::CreateWorldBrowserInternal(
     instance->textureName = textureName;
     instance->client = BrowserClient::Create(id, *this, audio_, focus_, network_);
     browsers_[id] = std::move(instance);
+    PublishSnapshot();
 
     const int browser_width = std::clamp((int)width, 1, 1024);
     const int browser_height = std::clamp((int)height, 1, 1024);
@@ -870,7 +872,8 @@ void BrowserManager::CreateWorldBrowserInternal(
         auto* device = RenderManager::Instance().GetDevice();
         if (!device) return;
 
-        worldRenderers_[id] = std::make_shared<WorldRenderer>(textureName, (float)browser_width, (float)browser_height);
+        auto renderer = std::make_shared<WorldRenderer>(textureName, (float)browser_width, (float)browser_height);
+        SetWorldRendererOnUi(id, std::move(renderer));
         inst->view.Initialize(device);
         inst->view.Create(browser_width, browser_height);
     });
@@ -937,6 +940,7 @@ void BrowserManager::CreateWorld2DBrowserInternal(
     instance->world2d.pivotX = pivotX;
     instance->world2d.pivotY = pivotY;
     browsers_[id] = std::move(instance);
+    PublishSnapshot();
 
     gta_.PostToMainThread([this, id, width, height]() {
         auto* inst = GetBrowserInstance(id);
@@ -1060,7 +1064,6 @@ void BrowserManager::DestroyBrowser(int id)
     }
 
     player_stats_poll_.erase(id);
-    pending_.erase(id);
     CancelDrag(id);
 
     auto it = browsers_.find(id);
@@ -1101,6 +1104,7 @@ void BrowserManager::DestroyBrowser(int id)
     {
         ReleaseOnMainThread(std::move(it2->second));
         browsers_.erase(it2);
+        PublishSnapshot();
     }
     else
     {
@@ -1138,10 +1142,7 @@ void BrowserManager::ReleaseBrowserResources(int id, BrowserInstance& instance)
     CancelDrag(id);
     screen_capture_.Stop(id);
 
-    std::shared_ptr<WorldRenderer> renderer;
-    auto wrIt = worldRenderers_.find(id);
-    if (wrIt != worldRenderers_.end())
-        renderer = wrIt->second;
+std::shared_ptr<WorldRenderer> renderer = std::move(instance.renderer);
 
     if (renderer)
         gta_.PostToMainThread([renderer]() { renderer->RestoreTexture(); });
@@ -1158,12 +1159,70 @@ void BrowserManager::ReleaseBrowserResources(int id, BrowserInstance& instance)
         }
     }
 
-    wrIt = worldRenderers_.find(id);
-    if (wrIt != worldRenderers_.end())
+}
+
+void BrowserManager::PublishSnapshot()
+{
+    auto next = std::make_shared<RenderSnapshot>();
+
+    next->browsers.reserve(browsers_.size());
+    for (auto& [id, instance] : browsers_)
     {
-        ReleaseOnMainThread(std::move(wrIt->second));
-        worldRenderers_.erase(wrIt);
+        if (instance)
+            next->browsers.push_back(instance);
+            next->renderers.push_back(instance->renderer);
     }
+
+    next->entities.reserve(entityToBrowserId_.size());
+    for (const auto& [entity, id] : entityToBrowserId_)
+    {
+        auto it = browsers_.find(id);
+        if (it == browsers_.end() || !it->second)
+            continue;
+
+        next->entities.push_back({ entity, it->second, it->second->renderer });
+    }
+
+    std::lock_guard<std::mutex> lock(snapshot_mutex_);
+    snapshot_ = std::move(next);
+}
+
+std::shared_ptr<const RenderSnapshot> BrowserManager::Snapshot() const
+{
+    std::lock_guard<std::mutex> lock(snapshot_mutex_);
+    return snapshot_;
+}
+
+void PendingPaint::Clear()
+{
+    std::lock_guard<std::mutex> lock(mutex);
+    pixels.clear();
+    dirty_rects.clear();
+    width = 0;
+    height = 0;
+    ready = false;
+    tick = 0;
+}
+
+void BrowserManager::SetWorldRendererOnUi(int id, std::shared_ptr<WorldRenderer> renderer)
+{
+    if (!CefCurrentlyOn(TID_UI))
+    {
+        CefPostTask(TID_UI, base::BindOnce(&BrowserManager::SetWorldRendererOnUi, base::Unretained(this), id, std::move(renderer)));
+        return;
+    }
+
+    auto it = browsers_.find(id);
+    if (it == browsers_.end() || !it->second)
+    {
+        ReleaseOnMainThread(std::move(renderer));
+        return;
+    }
+
+    it->second->renderer = std::move(renderer);
+
+    // The attach may have published its binding before this renderer arrived.
+    PublishSnapshot();
 }
 
 void BrowserManager::DestroyAllBrowsers()
@@ -1296,6 +1355,7 @@ void BrowserManager::AttachBrowserToObject(int browserId, int objectId)
     if (CEntity* nativeEntity = GetEntityFromObjectId(objectId))
     {
         entityToBrowserId_[nativeEntity] = browserId;
+        PublishSnapshot();
         audio_.SetStreamMuted(browserId, false); // unmute when attached
 
         LOG_DEBUG("[CEF] Browser {} attached to object {} (Entity: {})", browserId, objectId, (const void*)nativeEntity);
@@ -1323,6 +1383,7 @@ void BrowserManager::ProcessPendingAttaches()
         if (CEntity* nativeEntity = GetEntityFromObjectId(objectId))
         {
             entityToBrowserId_[nativeEntity] = browserId;
+            PublishSnapshot();
             audio_.SetStreamMuted(browserId, false); // unmute when attached
 
             LOG_DEBUG("[CEF] Browser {} attached to object {} (Entity: {})", browserId, objectId, (const void*)nativeEntity);
@@ -1351,14 +1412,13 @@ void BrowserManager::DetachBrowserFromObject(int browserId, int objectId)
             // Restore the swapped texture on the render thread: RestoreTexture() writes
             // RenderWare material pointers, which must not happen while the game thread is
             // rendering this very entity.
-            auto wrIt = worldRenderers_.find(browserId);
-            if (wrIt != worldRenderers_.end() && wrIt->second)
-            {
-                std::shared_ptr<WorldRenderer> renderer = wrIt->second;
+            auto* detachInstance = GetBrowserInstance(browserId);
+            std::shared_ptr<WorldRenderer> renderer = detachInstance ? detachInstance->renderer : nullptr;
+            if (renderer)
                 gta_.PostToMainThread([renderer]() { renderer->RestoreTexture(); });
-            }
 
             entityToBrowserId_.erase(it);
+            PublishSnapshot();
             audio_.SetStreamMuted(browserId, true); // mute when detached
             LOG_DEBUG("[CEF] Browser {} detached from object {} (Entity: {})",
                       browserId,
@@ -1459,7 +1519,6 @@ void BrowserManager::OnBrowserClosed(int id, CefRefPtr<CefBrowser> browser)
     LOG_DEBUG("[CEF] Browser {} closed.", id);
 
     player_stats_poll_.erase(id);
-    pending_.erase(id);
 
     // A browser CEF closes by itself (window.close()) has to release the same resources as the
     // destroy path, otherwise a world browser keeps its swapped texture and entity mapping.
@@ -1471,6 +1530,7 @@ void BrowserManager::OnBrowserClosed(int id, CefRefPtr<CefBrowser> browser)
     {
         ReleaseOnMainThread(std::move(it->second));
         browsers_.erase(it);
+        PublishSnapshot();
     }
 }
 
@@ -1569,18 +1629,8 @@ void BrowserManager::DispatchScreenFrameOnUi(std::shared_ptr<CapturedScreenFrame
 
 void BrowserManager::ClearPendingPaint(int id)
 {
-    auto it = pending_.find(id);
-    if (it == pending_.end())
-        return;
-
-    auto& pending_paint = it->second;
-    std::lock_guard<std::mutex> lock(pending_paint.mutex);
-    pending_paint.pixels.clear();
-    pending_paint.dirty_rects.clear();
-    pending_paint.width = 0;
-    pending_paint.height = 0;
-    pending_paint.ready = false;
-    pending_paint.tick = 0;
+    if (auto* instance = GetBrowserInstance(id))
+        instance->pending.Clear();
 }
 
 void BrowserManager::RestoreBrowserTextures()
@@ -1590,11 +1640,9 @@ void BrowserManager::RestoreBrowserTextures()
         if (!instance || !instance->visible)
             continue;
 
-        auto it = pending_.find(id);
-        if (it == pending_.end())
             continue;
 
-        auto& pending_paint = it->second;
+        auto& pending_paint = instance->pending;
         std::lock_guard<std::mutex> lock(pending_paint.mutex);
 
         if (pending_paint.pixels.empty() || pending_paint.width <= 0 || pending_paint.height <= 0)
@@ -1602,10 +1650,7 @@ void BrowserManager::RestoreBrowserTextures()
 
         if (instance->mode == RenderMode::WorldObject3D)
         {
-            auto world_renderer = worldRenderers_.find(id);
-            if (world_renderer != worldRenderers_.end() && world_renderer->second)
-            {
-                world_renderer->second->OnPaint(
+            if (instance->renderer)             {                 instance->renderer->OnPaint(
                     pending_paint.pixels.data(),
                     pending_paint.width,
                     pending_paint.height
@@ -1669,7 +1714,7 @@ void BrowserManager::OnPaint(int id, const void* buffer, int width, int height, 
         return;
     }
 
-    auto& pending_paint = pending_[id];
+    auto& pending_paint = instance->pending;
     {
         std::lock_guard<std::mutex> lock(pending_paint.mutex);
         const size_t buffer_size = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
@@ -1773,20 +1818,24 @@ bool BrowserManager::RenderAll()
     UpdateAudioSpatialization();
     SendExternalBeginFrames();
 
-    for (auto& [id, inst] : browsers_)
+    const auto snapshot = Snapshot();
+
+    for (size_t i = 0; i < snapshot->browsers.size(); ++i)
     {
+        const auto& inst = snapshot->browsers[i];
+        const auto& renderer = snapshot->renderers[i];
+
         if (!inst)
             continue;
 
         if (inst->clear_texture.exchange(false, std::memory_order_acq_rel))
         {
-            ClearPendingPaint(id);
+            inst->pending.Clear();
 
             if (inst->mode == RenderMode::WorldObject3D)
             {
-                auto world_renderer = worldRenderers_.find(id);
-                if (world_renderer != worldRenderers_.end() && world_renderer->second)
-                    world_renderer->second->Clear();
+                if (renderer)
+                    inst->renderer->Clear();
             }
             else
             {
@@ -1796,15 +1845,12 @@ bool BrowserManager::RenderAll()
 
         if (!inst->visible)
         {
-            ClearPendingPaint(id);
+            inst->pending.Clear();
             continue;
         }
 
-        auto it = pending_.find(id);
-        if (it == pending_.end())
-            continue;
+        auto& pending_paint = inst->pending;
 
-        auto& pending_paint = it->second;
         std::lock_guard<std::mutex> lock(pending_paint.mutex);
 
         if (!pending_paint.ready || pending_paint.pixels.empty())
@@ -1822,10 +1868,9 @@ bool BrowserManager::RenderAll()
 
         if (inst->mode == RenderMode::WorldObject3D)
         {
-            auto world_renderer = worldRenderers_.find(id);
-            if (world_renderer != worldRenderers_.end() && world_renderer->second)
+            if (renderer)
             {
-                world_renderer->second->OnPaint(
+                renderer->OnPaint(
                     pending_paint.pixels.data(),
                     pending_paint.width,
                     pending_paint.height
@@ -1849,8 +1894,8 @@ bool BrowserManager::RenderAll()
         int layer;
     };
     std::vector<RenderEntry> render_order;
-    render_order.reserve(browsers_.size());
-    for (auto& [id, browser] : browsers_)
+    render_order.reserve(snapshot->browsers.size());
+    for (const auto& browser : snapshot->browsers)
     {
         if (browser && browser->visible && !browser->closing && browser->mode != RenderMode::WorldObject3D)
             render_order.push_back({browser.get(), browser->layer.load(std::memory_order_relaxed)});
@@ -1913,33 +1958,32 @@ void BrowserManager::OnBeforeEntityRender(CEntity* entity)
     if (ShouldSkipBrowserRendering())
         return;
 
-    auto it = entityToBrowserId_.find(entity);
-    if (it == entityToBrowserId_.end())
+    const auto snapshot = Snapshot();
+
+    for (const auto& binding : snapshot->entities)
+    {
+        if (binding.entity != entity || !binding.instance || !binding.renderer)
+            continue;
+
+        if (!binding.instance->visible)
+            return;
+
+        binding.renderer->SwapTexture(entity);
         return;
-
-    const int browserId = it->second;
-
-    auto* browser = GetBrowserInstance(browserId);
-    if (!browser || !browser->visible)
-        return;
-
-    auto wrIt = worldRenderers_.find(browserId);
-    if (wrIt == worldRenderers_.end() || !wrIt->second)
-        return;
-
-    wrIt->second->SwapTexture(entity);
+    }
 }
 
 void BrowserManager::OnAfterEntityRender(CEntity* entity)
 {
-    auto it = entityToBrowserId_.find(entity);
-    if (it == entityToBrowserId_.end())
-        return;
-    int browserId = it->second;
-    auto wrIt = worldRenderers_.find(browserId);
-    if (wrIt != worldRenderers_.end())
+    const auto snapshot = Snapshot();
+
+    for (const auto& binding : snapshot->entities)
     {
-        wrIt->second->RestoreTexture();
+        if (binding.entity == entity && binding.renderer)
+        {
+            binding.renderer->RestoreTexture();
+            return;
+        }
     }
 }
 
@@ -2277,17 +2321,19 @@ void BrowserManager::OnDeviceLost()
     {
         if (instance) 
         {
-            LOG_DEBUG("[BrowserManager] Releasing browser {} View resources", id);
+            LOG_DEBUG("[BrowserManager] Releasing browser {} View resources", instance->id);
             instance->view.OnDeviceLost();
         }
     }
     
     // Release all WorldRenderer resources (3D world browsers)
-    for (auto& [browserId, renderer] : worldRenderers_) 
+    const auto snapshot = Snapshot();
+
+    for (const auto& renderer : snapshot->renderers)
     {
         if (renderer)
         {
-            LOG_DEBUG("[BrowserManager] Releasing WorldRenderer for browser {} resources", browserId);
+            LOG_DEBUG("[BrowserManager] Releasing WorldRenderer resources");
             renderer->OnDeviceLost();
         }
     }
@@ -2300,17 +2346,19 @@ void BrowserManager::OnDeviceReset(IDirect3DDevice9* device)
     {
         if (instance) 
         {
-            LOG_DEBUG("[BrowserManager] Recreating browser {} View resources", id);
+            LOG_DEBUG("[BrowserManager] Recreating browser {} View resources", instance->id);
             instance->view.OnDeviceReset(device);
         }
     }
     
     // Recreate all WorldRenderer resources (3D world browsers)
-    for (auto& [browserId, renderer] : worldRenderers_) 
+    const auto snapshot = Snapshot();
+
+    for (const auto& renderer : snapshot->renderers)
     {
         if (renderer) 
         {
-            LOG_DEBUG("[BrowserManager] Recreating WorldRenderer for browser {} resources", browserId);
+            LOG_DEBUG("[BrowserManager] Recreating WorldRenderer resources");
             renderer->OnDeviceReset(device);
         }
     }
