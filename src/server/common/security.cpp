@@ -64,7 +64,9 @@ bool SecurityManager::ValidateCookie(const asio::ip::udp::endpoint& client_endpo
         decrypted_cookie = DecryptCookie(cookie, cookie_secret_);
     }
 
-    if (decrypted_cookie.empty())
+    // Cookie plaintext is exactly IPv4 (4 bytes) + UDP port (2 bytes).
+    // Reject truncated/malformed input before indexing it below.
+    if (decrypted_cookie.size() != 6)
         return false;
 
     try
@@ -99,6 +101,12 @@ std::vector<uint8_t> SecurityManager::InitiateKeyExchange(int playerid)
 std::unique_ptr<SessionKeys> SecurityManager::FinalizeKeyExchange(int playerid,
                                                                   const std::vector<uint8_t>& client_public_key)
 {
+    // The key is attacker-controlled in both content and length; crypto_kx reads
+    // exactly crypto_kx_PUBLICKEYBYTES from it, so a short vector would be an
+    // out-of-bounds read.
+    if (client_public_key.size() != crypto_kx_PUBLICKEYBYTES)
+        return nullptr;
+
     std::lock_guard<std::mutex> lock(kx_mutex_);
     auto it = pending_key_exchanges_.find(playerid);
     if (it == pending_key_exchanges_.end())
