@@ -766,6 +766,7 @@ void BrowserManager::CreateBrowserInternal(
     instance->controls_chat_input = controls_chat;
 
     browsers_[id] = std::move(instance);
+    PublishSnapshot();
 
     gta_.PostToMainThread([this, id, width, height]() {
         auto* inst = GetBrowserInstance(id);
@@ -859,6 +860,7 @@ void BrowserManager::CreateWorldBrowserInternal(
     instance->textureName = textureName;
     instance->client = BrowserClient::Create(id, *this, audio_, focus_, network_);
     browsers_[id] = std::move(instance);
+    PublishSnapshot();
 
     const int browser_width = std::clamp((int)width, 1, 1024);
     const int browser_height = std::clamp((int)height, 1, 1024);
@@ -937,6 +939,7 @@ void BrowserManager::CreateWorld2DBrowserInternal(
     instance->world2d.pivotX = pivotX;
     instance->world2d.pivotY = pivotY;
     browsers_[id] = std::move(instance);
+    PublishSnapshot();
 
     gta_.PostToMainThread([this, id, width, height]() {
         auto* inst = GetBrowserInstance(id);
@@ -1101,6 +1104,7 @@ void BrowserManager::DestroyBrowser(int id)
     {
         ReleaseOnMainThread(std::move(it2->second));
         browsers_.erase(it2);
+        PublishSnapshot();
     }
     else
     {
@@ -1164,6 +1168,27 @@ void BrowserManager::ReleaseBrowserResources(int id, BrowserInstance& instance)
         ReleaseOnMainThread(std::move(wrIt->second));
         worldRenderers_.erase(wrIt);
     }
+}
+
+void BrowserManager::PublishSnapshot()
+{
+    auto next = std::make_shared<RenderSnapshot>();
+
+    next->browsers.reserve(browsers_.size());
+    for (auto& [id, instance] : browsers_)
+    {
+        if (instance)
+            next->browsers.push_back(instance);
+    }
+
+    std::lock_guard<std::mutex> lock(snapshot_mutex_);
+    snapshot_ = std::move(next);
+}
+
+std::shared_ptr<const RenderSnapshot> BrowserManager::Snapshot() const
+{
+    std::lock_guard<std::mutex> lock(snapshot_mutex_);
+    return snapshot_;
 }
 
 void BrowserManager::DestroyAllBrowsers()
@@ -1471,6 +1496,7 @@ void BrowserManager::OnBrowserClosed(int id, CefRefPtr<CefBrowser> browser)
     {
         ReleaseOnMainThread(std::move(it->second));
         browsers_.erase(it);
+        PublishSnapshot();
     }
 }
 
@@ -1773,18 +1799,20 @@ bool BrowserManager::RenderAll()
     UpdateAudioSpatialization();
     SendExternalBeginFrames();
 
-    for (auto& [id, inst] : browsers_)
+    const auto snapshot = Snapshot();
+
+    for (const auto& inst : snapshot->browsers)
     {
         if (!inst)
             continue;
 
         if (inst->clear_texture.exchange(false, std::memory_order_acq_rel))
         {
-            ClearPendingPaint(id);
+            ClearPendingPaint(inst->id);
 
             if (inst->mode == RenderMode::WorldObject3D)
             {
-                auto world_renderer = worldRenderers_.find(id);
+                auto world_renderer = worldRenderers_.find(inst->id);
                 if (world_renderer != worldRenderers_.end() && world_renderer->second)
                     world_renderer->second->Clear();
             }
@@ -1796,11 +1824,11 @@ bool BrowserManager::RenderAll()
 
         if (!inst->visible)
         {
-            ClearPendingPaint(id);
+            ClearPendingPaint(inst->id);
             continue;
         }
 
-        auto it = pending_.find(id);
+        auto it = pending_.find(inst->id);
         if (it == pending_.end())
             continue;
 
@@ -1822,7 +1850,7 @@ bool BrowserManager::RenderAll()
 
         if (inst->mode == RenderMode::WorldObject3D)
         {
-            auto world_renderer = worldRenderers_.find(id);
+            auto world_renderer = worldRenderers_.find(inst->id);
             if (world_renderer != worldRenderers_.end() && world_renderer->second)
             {
                 world_renderer->second->OnPaint(
@@ -1849,8 +1877,8 @@ bool BrowserManager::RenderAll()
         int layer;
     };
     std::vector<RenderEntry> render_order;
-    render_order.reserve(browsers_.size());
-    for (auto& [id, browser] : browsers_)
+    render_order.reserve(snapshot->browsers.size());
+    for (const auto& browser : snapshot->browsers)
     {
         if (browser && browser->visible && !browser->closing && browser->mode != RenderMode::WorldObject3D)
             render_order.push_back({browser.get(), browser->layer.load(std::memory_order_relaxed)});

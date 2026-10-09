@@ -105,6 +105,13 @@ struct PendingPaint
     uint64_t tick = 0;
 };
 
+// Immutable list of the live browsers, rebuilt by the CEF UI thread after every change to the map.
+// The render thread reads this instead of browsers_ so the containers stay single-writer.
+struct RenderSnapshot
+{
+    std::vector<std::shared_ptr<BrowserInstance>> browsers;
+};
+
 class BrowserManager
 {
 public:
@@ -296,6 +303,13 @@ private:
     std::unordered_map<int, std::shared_ptr<WorldRenderer>> worldRenderers_;
     std::unordered_map<CEntity*, int> entityToBrowserId_;
     std::vector<std::pair<int, int>> pending_attaches_;
+
+    // Never null: the render thread reads it before the first publish.
+    std::shared_ptr<const RenderSnapshot> snapshot_ = std::make_shared<const RenderSnapshot>();
+    mutable std::mutex snapshot_mutex_;
+
+    void PublishSnapshot();
+    std::shared_ptr<const RenderSnapshot> Snapshot() const;
 
     // Drops the last reference to a D3D owning object inside a main-thread task, so the
     // texture is released on the render thread. The game's D3D device is not created with
