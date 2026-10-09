@@ -168,10 +168,23 @@ void SampPlatformBridge::CallOnDownloadStart(int playerid)
         if (amx_FindPublic(amx, "OnCefDownloadStart", &idx) != AMX_ERR_NONE) 
             continue;
 
-        amx_Push(amx, playerid);
+        // See the note on PushCell: entering the public after a failed push would let it read
+        // whatever is on the stack instead of the arguments it declares.
+        const cell stk_before_push = amx->stk;
+        const int params_before_push = amx->paramcount;
 
-        cell retval;
-        amx_Exec(amx, &retval, idx);
+        if (PushCell(amx, playerid))
+        {
+            cell retval;
+            if (amx_Exec(amx, &retval, idx) != AMX_ERR_NONE)
+                LogError("CallOnDownloadStart: amx_Exec failed.");
+        }
+        else
+        {
+            LogError("CallOnDownloadStart: failed to push an argument, callback skipped.");
+            amx->stk = stk_before_push;
+            amx->paramcount = params_before_push;
+        }
     }
 }
 
@@ -233,10 +246,23 @@ void SampPlatformBridge::CallOnDownloadFinish(int playerid)
         if (amx_FindPublic(amx, "OnCefDownloadFinish", &idx) != AMX_ERR_NONE) 
             continue;
 
-        amx_Push(amx, playerid);
+        // See the note on PushCell: entering the public after a failed push would let it read
+        // whatever is on the stack instead of the arguments it declares.
+        const cell stk_before_push = amx->stk;
+        const int params_before_push = amx->paramcount;
 
-        cell retval;
-        amx_Exec(amx, &retval, idx);
+        if (PushCell(amx, playerid))
+        {
+            cell retval;
+            if (amx_Exec(amx, &retval, idx) != AMX_ERR_NONE)
+                LogError("CallOnDownloadFinish: amx_Exec failed.");
+        }
+        else
+        {
+            LogError("CallOnDownloadFinish: failed to push an argument, callback skipped.");
+            amx->stk = stk_before_push;
+            amx->paramcount = params_before_push;
+        }
     }
 }
 
@@ -248,15 +274,31 @@ void SampPlatformBridge::CallOnPressKey(int playerid, int key, int scancode, int
         if (amx_FindPublic(amx, "OnCefPressKey", &idx) != AMX_ERR_NONE) 
             continue;
 
-        amx_Push(amx, repeat);
-        amx_Push(amx, down);
-        amx_Push(amx, modifiers);
-        amx_Push(amx, scancode);
-        amx_Push(amx, key);
-        amx_Push(amx, playerid);
+        // See the note on PushCell: entering the public after a failed push would let it read
+        // whatever is on the stack instead of the arguments it declares.
+        const cell stk_before_push = amx->stk;
+        const int params_before_push = amx->paramcount;
 
-        cell retval;
-        amx_Exec(amx, &retval, idx);
+        bool pushed = true;
+        pushed = PushCell(amx, repeat) && pushed;
+        pushed = PushCell(amx, down) && pushed;
+        pushed = PushCell(amx, modifiers) && pushed;
+        pushed = PushCell(amx, scancode) && pushed;
+        pushed = PushCell(amx, key) && pushed;
+        pushed = PushCell(amx, playerid) && pushed;
+
+        if (pushed)
+        {
+            cell retval;
+            if (amx_Exec(amx, &retval, idx) != AMX_ERR_NONE)
+                LogError("CallOnPressKey: amx_Exec failed.");
+        }
+        else
+        {
+            LogError("CallOnPressKey: failed to push an argument, callback skipped.");
+            amx->stk = stk_before_push;
+            amx->paramcount = params_before_push;
+        }
     }
 }
 
