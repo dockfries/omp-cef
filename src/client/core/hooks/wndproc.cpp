@@ -1,4 +1,4 @@
-﻿#include "wndproc.hpp"
+#include "wndproc.hpp"
 #include "system/logger.hpp"
 
 bool WndProcHook::Initialize()

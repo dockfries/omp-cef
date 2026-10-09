@@ -1,4 +1,4 @@
-﻿#include "gta.hpp"
+#include "gta.hpp"
 #include "system/logger.hpp"
 
 #include <shlobj.h>

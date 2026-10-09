@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "samp/pools/game_pool.hpp"
 

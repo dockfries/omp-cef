@@ -1,4 +1,4 @@
-﻿#include "network_manager.hpp"
+#include "network_manager.hpp"
 #include "shared/packet-serializer.hpp"
 #include "shared/crypto.hpp"
 #include "shared/utils.hpp"
