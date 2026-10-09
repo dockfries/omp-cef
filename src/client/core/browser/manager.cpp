@@ -1180,6 +1180,7 @@ void BrowserManager::PublishSnapshot()
     {
         if (instance)
             next->browsers.push_back(instance);
+            next->renderers.push_back(instance->renderer);
     }
 
     next->entities.reserve(entityToBrowserId_.size());
@@ -1190,13 +1191,6 @@ void BrowserManager::PublishSnapshot()
             continue;
 
         next->entities.push_back({ entity, it->second, it->second->renderer });
-    }
-
-    next->renderers.reserve(browsers_.size());
-    for (auto& [id, instance] : browsers_)
-    {
-        if (instance && instance->renderer)
-            next->renderers.push_back(instance->renderer);
     }
 
     std::lock_guard<std::mutex> lock(snapshot_mutex_);
@@ -1840,8 +1834,11 @@ bool BrowserManager::RenderAll()
 
     const auto snapshot = Snapshot();
 
-    for (const auto& inst : snapshot->browsers)
+    for (size_t i = 0; i < snapshot->browsers.size(); ++i)
     {
+        const auto& inst = snapshot->browsers[i];
+        const auto& renderer = snapshot->renderers[i];
+
         if (!inst)
             continue;
 
@@ -1851,7 +1848,7 @@ bool BrowserManager::RenderAll()
 
             if (inst->mode == RenderMode::WorldObject3D)
             {
-                if (inst->renderer)
+                if (renderer)
                     inst->renderer->Clear();
             }
             else
@@ -1885,9 +1882,9 @@ bool BrowserManager::RenderAll()
 
         if (inst->mode == RenderMode::WorldObject3D)
         {
-            if (inst->renderer)
+            if (renderer)
             {
-                inst->renderer->OnPaint(
+                renderer->OnPaint(
                     pending_paint.pixels.data(),
                     pending_paint.width,
                     pending_paint.height
