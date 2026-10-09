@@ -63,6 +63,20 @@ struct World2DBrowserData
     float pivotY = 1.0f;
 };
 
+struct PendingPaint
+{
+    std::mutex mutex;
+    std::vector<uint8_t> pixels;
+    std::vector<cef_rect_t> dirty_rects;
+    int width = 0;
+    int height = 0;
+    bool ready = false;
+    uint64_t tick = 0;
+
+    void Clear();
+};
+
+
 // Holds all data and state related to a single browser instance
 struct BrowserInstance
 {
@@ -91,18 +105,10 @@ struct BrowserInstance
     CefRefPtr<CefClient> devtools_client;
     CefRefPtr<CefBrowser> devtools_browser;
 
-    explicit BrowserInstance(int id) : id(id), view(id) {}
-};
+    std::shared_ptr<WorldRenderer> renderer;
+    PendingPaint pending;
 
-struct PendingPaint
-{
-    std::mutex mutex;
-    std::vector<uint8_t> pixels;
-    std::vector<cef_rect_t> dirty_rects;
-    int width = 0;
-    int height = 0;
-    bool ready = false;
-    uint64_t tick = 0;
+    explicit BrowserInstance(int id) : id(id), view(id) {}
 };
 
 // Immutable list of the live browsers, rebuilt by the CEF UI thread after every change to the map.
@@ -314,6 +320,7 @@ private:
     // Drops the last reference to a D3D owning object inside a main-thread task, so the
     // texture is released on the render thread. The game's D3D device is not created with
     // D3DCREATE_MULTITHREADED, so releasing textures from the CEF UI thread is UB.
+    void SetWorldRendererOnUi(int id, std::shared_ptr<WorldRenderer> renderer);
     void ReleaseOnMainThread(std::shared_ptr<void> resource);
     void ReleaseBrowserResources(int id, BrowserInstance& instance);
 

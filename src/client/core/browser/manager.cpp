@@ -874,7 +874,8 @@ void BrowserManager::CreateWorldBrowserInternal(
         auto* device = RenderManager::Instance().GetDevice();
         if (!device) return;
 
-        worldRenderers_[id] = std::make_shared<WorldRenderer>(textureName, (float)browser_width, (float)browser_height);
+        auto renderer = std::make_shared<WorldRenderer>(textureName, (float)browser_width, (float)browser_height);
+        SetWorldRendererOnUi(id, std::move(renderer));
         inst->view.Initialize(device);
         inst->view.Create(browser_width, browser_height);
     });
@@ -1193,6 +1194,35 @@ std::shared_ptr<const RenderSnapshot> BrowserManager::Snapshot() const
 {
     std::lock_guard<std::mutex> lock(snapshot_mutex_);
     return snapshot_;
+}
+
+void PendingPaint::Clear()
+{
+    std::lock_guard<std::mutex> lock(mutex);
+    pixels.clear();
+    dirty_rects.clear();
+    width = 0;
+    height = 0;
+    ready = false;
+    tick = 0;
+}
+
+void BrowserManager::SetWorldRendererOnUi(int id, std::shared_ptr<WorldRenderer> renderer)
+{
+    if (!CefCurrentlyOn(TID_UI))
+    {
+        CefPostTask(TID_UI, base::BindOnce(&BrowserManager::SetWorldRendererOnUi, base::Unretained(this), id, std::move(renderer)));
+        return;
+    }
+
+    auto it = browsers_.find(id);
+    if (it == browsers_.end() || !it->second)
+    {
+        ReleaseOnMainThread(std::move(renderer));
+        return;
+    }
+
+    it->second->renderer = std::move(renderer);
 }
 
 void BrowserManager::DestroyAllBrowsers()
@@ -1600,18 +1630,8 @@ void BrowserManager::DispatchScreenFrameOnUi(std::shared_ptr<CapturedScreenFrame
 
 void BrowserManager::ClearPendingPaint(int id)
 {
-    auto it = pending_.find(id);
-    if (it == pending_.end())
-        return;
-
-    auto& pending_paint = it->second;
-    std::lock_guard<std::mutex> lock(pending_paint.mutex);
-    pending_paint.pixels.clear();
-    pending_paint.dirty_rects.clear();
-    pending_paint.width = 0;
-    pending_paint.height = 0;
-    pending_paint.ready = false;
-    pending_paint.tick = 0;
+    if (auto* instance = GetBrowserInstance(id))
+        instance->pending.Clear();
 }
 
 void BrowserManager::RestoreBrowserTextures()
@@ -1621,11 +1641,9 @@ void BrowserManager::RestoreBrowserTextures()
         if (!instance || !instance->visible)
             continue;
 
-        auto it = pending_.find(id);
-        if (it == pending_.end())
             continue;
 
-        auto& pending_paint = it->second;
+        auto& pending_paint = instance->pending;
         std::lock_guard<std::mutex> lock(pending_paint.mutex);
 
         if (pending_paint.pixels.empty() || pending_paint.width <= 0 || pending_paint.height <= 0)
@@ -1700,7 +1718,7 @@ void BrowserManager::OnPaint(int id, const void* buffer, int width, int height, 
         return;
     }
 
-    auto& pending_paint = pending_[id];
+    auto& pending_paint = instance->pending;
     {
         std::lock_guard<std::mutex> lock(pending_paint.mutex);
         const size_t buffer_size = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
@@ -1813,13 +1831,12 @@ bool BrowserManager::RenderAll()
 
         if (inst->clear_texture.exchange(false, std::memory_order_acq_rel))
         {
-            ClearPendingPaint(inst->id);
+            inst->pending.Clear();
 
             if (inst->mode == RenderMode::WorldObject3D)
             {
-                auto world_renderer = worldRenderers_.find(inst->id);
-                if (world_renderer != worldRenderers_.end() && world_renderer->second)
-                    world_renderer->second->Clear();
+                if (inst->renderer)
+                    inst->renderer->Clear();
             }
             else
             {
@@ -1829,15 +1846,12 @@ bool BrowserManager::RenderAll()
 
         if (!inst->visible)
         {
-            ClearPendingPaint(inst->id);
+            inst->pending.Clear();
             continue;
         }
 
-        auto it = pending_.find(inst->id);
-        if (it == pending_.end())
-            continue;
+        auto& pending_paint = inst->pending;
 
-        auto& pending_paint = it->second;
         std::lock_guard<std::mutex> lock(pending_paint.mutex);
 
         if (!pending_paint.ready || pending_paint.pixels.empty())
@@ -1855,10 +1869,9 @@ bool BrowserManager::RenderAll()
 
         if (inst->mode == RenderMode::WorldObject3D)
         {
-            auto world_renderer = worldRenderers_.find(inst->id);
-            if (world_renderer != worldRenderers_.end() && world_renderer->second)
+            if (inst->renderer)
             {
-                world_renderer->second->OnPaint(
+                inst->renderer->OnPaint(
                     pending_paint.pixels.data(),
                     pending_paint.width,
                     pending_paint.height
