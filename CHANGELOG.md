@@ -1,37 +1,4 @@
 
-## [1.4.2](https://github.com/dockfries/omp-cef/compare/v1.4.1..v1.4.2) (2026-10-09)
-
-### 🧹 Chore
-
-- Drop the UTF-8 BOM from the remaining sources - ([ba003d1](https://github.com/dockfries/omp-cef/commit/ba003d1c4870a60eec6829b2535a46c62568ccb7))
-- Replace the remaining non-ASCII characters in sources - ([04056cb](https://github.com/dockfries/omp-cef/commit/04056cb2fe9c6212c74cd8764aa9aaa6f49ba65f))
-- Bump version to 1.4.2 - ([4878826](https://github.com/dockfries/omp-cef/commit/4878826508a4caae5613f9476e4c8acf6905a98b))
-
-### ✨ Features
-
-- Add browser layer control - ([ec3a19a](https://github.com/dockfries/omp-cef/commit/ec3a19a362981c95c3ba56fd2eedebbead988de4))
-
-### 🐛 Bug Fixes
-
-- *(client)* Harden SA-MP version detection - ([d26225c](https://github.com/dockfries/omp-cef/commit/d26225ca70f7d24ce8ef40266f7267b7f421868b))
-- *(client)* Move cross-thread game state onto the game thread - ([1591759](https://github.com/dockfries/omp-cef/commit/15917592902e5906ddd79de0c6ffb83db0e9ab81))
-- *(omp)* Release string arguments of registered event callbacks - ([9b2e968](https://github.com/dockfries/omp-cef/commit/9b2e968396483c9ee4b23d9ddbf2d536a8e7896b))
-- *(samp)* Stop rewinding the AMX heap when a string argument cannot be pushed - ([f064c77](https://github.com/dockfries/omp-cef/commit/f064c771bfb92436fa7f908978d59c2c0c51278c))
-- *(server)* Invalidate the Pawn bridge, surface startup failures, dedupe file requests - ([3968249](https://github.com/dockfries/omp-cef/commit/3968249cc74df4ecc5a02df010709c0ba1dea3af))
-- *(server)* Validate cookie and client public key lengths - ([d79b914](https://github.com/dockfries/omp-cef/commit/d79b914a2f9f67c6528681b645ea1f95519329d8))
-- Prepare fork release builds and sampctl resources - ([19056cc](https://github.com/dockfries/omp-cef/commit/19056ccaba62766d7f919d2fcadccc85af2dfb64))
-
-### 🤖 CI
-
-- Fail the release when the embedded version does not match the requested one - ([c17fdbd](https://github.com/dockfries/omp-cef/commit/c17fdbdb513b824a59ef62418ed48b7adba67b3e))
-
-### 📦 Build
-
-- Compile MSVC sources and narrow literals as UTF-8 - ([ddae45b](https://github.com/dockfries/omp-cef/commit/ddae45b67c1d5eec681272b6e1c93784755dafd9))
-
-
-
-
 ## [1.4.1](https://github.com/dockfries/omp-cef/compare/v1.4.0..v1.4.1) (2026-09-09)
 
 ### 📖 Documentation
