@@ -662,6 +662,7 @@ void BrowserManager::CreateBrowser(
     int id, const std::string& url, bool focused, bool controls_chat, float width, float height)
 {
     LOG_DEBUG("[CEF] CreateBrowser called with ID={}, url={}", id, url);
+    LOG_DEBUG("[TRACE] 1 CreateBrowser enter id={}", id);
     
     auto existing = browsers_.find(id);
     if (existing != browsers_.end())
@@ -776,6 +777,7 @@ void BrowserManager::CreateBrowserInternal(
         if (!device) return;
 
         inst->view.Initialize(device);
+        LOG_DEBUG("[TRACE] 2 view init enter");
 
         int browser_width  = (int)width;
         int browser_height = (int)height;
@@ -1056,6 +1058,7 @@ void BrowserManager::SetBrowserVisible(int id, bool visible)
 
 void BrowserManager::DestroyBrowser(int id)
 {
+    LOG_DEBUG("[TRACE] 4 DestroyBrowser enter");
     if (!CefCurrentlyOn(TID_UI))
     {
         CefPostTask(TID_UI, base::BindOnce(&BrowserManager::DestroyBrowser, base::Unretained(this), id));
@@ -1122,11 +1125,12 @@ void BrowserManager::ReleaseOnMainThread(std::shared_ptr<void> resource)
     // The task below is what destroys the object: the main-thread queue holds the last
     // reference until it has run the task and released it, so the D3D texture is freed on
     // the render thread instead of the CEF UI thread.
-    gta_.PostToMainThread([resource]() mutable { resource.reset(); });
+    gta_.PostToMainThread([resource]() mutable { LOG_DEBUG("[TRACE] 6 release enter"); resource.reset(); LOG_DEBUG("[TRACE] 6 release exit"); });
 }
 
 void BrowserManager::ReleaseBrowserResources(int id, BrowserInstance& instance)
 {
+    LOG_DEBUG("[TRACE] 5 ReleaseBrowserResources enter");
     if (instance.browser && instance.browser->GetHost())
         instance.browser->GetHost()->CloseDevTools();
 
@@ -1148,7 +1152,7 @@ void BrowserManager::ReleaseBrowserResources(int id, BrowserInstance& instance)
         renderer = wrIt->second;
 
     if (renderer)
-        gta_.PostToMainThread([renderer]() { renderer->RestoreTexture(); });
+        gta_.PostToMainThread([renderer]() { LOG_DEBUG("[TRACE] 7 restore tex enter"); renderer->RestoreTexture(); LOG_DEBUG("[TRACE] 7 restore tex exit"); });
 
     for (auto eit = entityToBrowserId_.begin(); eit != entityToBrowserId_.end();)
     {
@@ -1380,7 +1384,7 @@ void BrowserManager::DetachBrowserFromObject(int browserId, int objectId)
             if (wrIt != worldRenderers_.end() && wrIt->second)
             {
                 std::shared_ptr<WorldRenderer> renderer = wrIt->second;
-                gta_.PostToMainThread([renderer]() { renderer->RestoreTexture(); });
+                gta_.PostToMainThread([renderer]() { LOG_DEBUG("[TRACE] 7 restore tex enter"); renderer->RestoreTexture(); LOG_DEBUG("[TRACE] 7 restore tex exit"); });
             }
 
             entityToBrowserId_.erase(it);
@@ -1408,6 +1412,7 @@ CEntity* BrowserManager::GetEntityFromObjectId(int objectId)
 
 void BrowserManager::OnBrowserCreated(int id, CefRefPtr<CefBrowser> browser)
 {
+    LOG_DEBUG("[TRACE] 3 OnBrowserCreated enter");
     if (is_shutting_down_)
     {
         // Shutdown already swept the map, so this browser is not tracked any more. Close it
