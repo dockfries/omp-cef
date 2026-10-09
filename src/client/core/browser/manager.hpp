@@ -2,10 +2,15 @@
 
 #include <atomic>
 #include <bitset>
-#include <functional>
-#include <memory>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <functional>
+#include <future>
+#include <memory>
+#include <mutex>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "client.hpp"
@@ -175,7 +180,8 @@ public:
 
     // Callbacks from BrowserClient
     void OnBrowserCreated(int id, CefRefPtr<CefBrowser> browser);
-    void OnBrowserClosed(int id);
+    void OnBrowserClosing(int id, CefRefPtr<CefBrowser> browser);
+    void OnBrowserClosed(int id, CefRefPtr<CefBrowser> browser);
     void OnPaint(int id, const void* buffer, int w, int h, const cef_rect_t* dirtyRects, size_t dirtyRectCount);
     bool StartDragging(int browserId,
         CefRefPtr<CefBrowser> browser,
@@ -241,6 +247,13 @@ private:
     void HandleDragMouseUpOnUi(CefMouseEvent event);
     void CancelDrag(int browserId = -1);
 
+    // Runs |fn| on the CEF UI thread and waits for it to finish. Returns false when the
+    // UI thread did not run it within |timeoutMs|. Never call this from that thread.
+    bool PostToUiAndWait(std::function<void()> fn, int timeoutMs);
+    // CEF UI thread: requests the close of every browser and then marks the sweep as done,
+    // so that the shutdown wait can start counting outstanding closes.
+    void BeginShutdownOnUi();
+
     struct MouseClickTracker
     {
         uint32_t lastDownTime = 0;
@@ -258,6 +271,17 @@ private:
     DWORD uiThreadId_ = 0;
     std::atomic<bool> is_shutting_down_{false};
     std::atomic<bool> isCefUpdatesPaused_{ false };
+
+    // Shutdown handshake between the runtime thread (which calls Shutdown) and the CEF
+    // UI thread (which delivers the OnBeforeClose callbacks).
+    std::mutex shutdown_mutex_;
+    std::condition_variable shutdown_cv_;
+    // Ids of browsers we asked CEF to close and have not seen OnBeforeClose for yet. Keeps
+    // Shutdown() from calling CefShutdown() while a close is still in flight, even when the
+    // browser entry has already left the map. Guarded by shutdown_mutex_.
+    std::unordered_set<int> outstanding_close_ids_;
+    // Set once the shutdown sweep has requested all closes, guarded by shutdown_mutex_.
+    bool shutdown_sweep_done_ = false;
 
     // The single source for which browser has focus. -1 means none.
     int focusedBrowserId_ = -1;

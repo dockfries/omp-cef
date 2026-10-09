@@ -221,6 +221,27 @@ namespace
 
         IMPLEMENT_REFCOUNTING(DevToolsClient);
     };
+
+    // Posted by BrowserManager::PostToUiAndWait. CEF's bundled base::BindOnce rejects
+    // capturing lambdas, so the task owns the state it needs instead of binding it.
+    class UiTask final : public CefTask
+    {
+    public:
+        UiTask(std::function<void()> fn, std::shared_ptr<std::promise<void>> done)
+            : fn_(std::move(fn)), done_(std::move(done)) {}
+
+        void Execute() override
+        {
+            fn_();
+            done_->set_value();
+        }
+
+    private:
+        std::function<void()> fn_;
+        std::shared_ptr<std::promise<void>> done_;
+
+        IMPLEMENT_REFCOUNTING(UiTask);
+    };
 }
 
 bool BrowserManager::Initialize()
@@ -551,6 +572,67 @@ static std::string NormalizeUrlForEmbeds(const std::string& url)
     return url;
 }
 
+bool BrowserManager::PostToUiAndWait(std::function<void()> fn, int timeoutMs)
+{
+    if (CefCurrentlyOn(TID_UI))
+    {
+        // Waiting for a task that could only run on this very thread would deadlock.
+        fn();
+        return true;
+    }
+
+    auto done = std::make_shared<std::promise<void>>();
+    auto finished = done->get_future();
+
+    if (!CefPostTask(TID_UI, new UiTask(std::move(fn), done)))
+    {
+        return false;
+    }
+
+    return finished.wait_for(std::chrono::milliseconds(timeoutMs)) == std::future_status::ready;
+}
+
+void BrowserManager::BeginShutdownOnUi()
+{
+    // CEF UI thread. Ask every browser we still track to close, then tell the waiting
+    // thread that the sweep is done. The close counter keeps that wait pending until CEF
+    // reports the browsers back through OnBeforeClose.
+    std::vector<CefRefPtr<CefBrowser>> to_close;
+
+    {
+        std::lock_guard<std::mutex> lock(shutdown_mutex_);
+
+        for (auto it = browsers_.begin(); it != browsers_.end();)
+        {
+            auto& instance = it->second;
+
+            if (instance && instance->browser && instance->browser->GetHost())
+            {
+                instance->closing = true;
+                outstanding_close_ids_.insert(it->first);
+                to_close.push_back(instance->browser);
+                ++it;
+            }
+            else
+            {
+                // Nothing was ever created for this entry, so no OnBeforeClose will arrive.
+                it = browsers_.erase(it);
+            }
+        }
+
+        shutdown_sweep_done_ = true;
+    }
+
+    shutdown_cv_.notify_all();
+
+    // Close outside the lock: CloseBrowser() may re-enter our lifecycle callbacks.
+    for (auto& browser : to_close)
+    {
+        if (auto host = browser->GetHost())
+            host->CloseBrowser(true);
+    }
+}
+
 void BrowserManager::Shutdown()
 {
     if (!initialized_ || is_shutting_down_.exchange(true))
@@ -560,14 +642,59 @@ void BrowserManager::Shutdown()
 
     screen_capture_.StopAll();
     screen_capture_.OnDeviceLost();
-    browsers_.clear();
-    worldRenderers_.clear();
-    entityToBrowserId_.clear();
 
-    CefShutdown();
+    {
+        std::lock_guard<std::mutex> lock(shutdown_mutex_);
+        shutdown_sweep_done_ = false;
+    }
+
+    if (CefCurrentlyOn(TID_UI))
+    {
+        // The manager is owned by the runtime thread, so this is not expected. We must not
+        // block the thread that has to deliver OnBeforeClose, so only ask and give up.
+        BeginShutdownOnUi();
+        LOG_ERROR("[CEF] Shutdown() ran on the CEF UI thread - skipping CefShutdown().");
+        initialized_ = false;
+        return;
+    }
+
+    constexpr int kUiRequestTimeoutMs = 2000;
+    constexpr int kCloseTimeoutSec = 5;
+
+    // Phase 1: the UI thread closes every browser and reports what it is waiting for.
+    const bool requested = PostToUiAndWait([this]() { BeginShutdownOnUi(); }, kUiRequestTimeoutMs);
+    if (!requested)
+        LOG_ERROR("[CEF] The CEF UI thread did not run the shutdown task within {} ms.", kUiRequestTimeoutMs);
+
+    // Phase 2: wait on this thread for the last OnBeforeClose. This has to happen outside
+    // of any UI task, otherwise the callback we are waiting for could never run.
+    bool closed = false;
+    if (requested)
+    {
+        std::unique_lock<std::mutex> lock(shutdown_mutex_);
+        closed = shutdown_cv_.wait_for(lock, std::chrono::seconds(kCloseTimeoutSec), [this]() {
+            return shutdown_sweep_done_ && outstanding_close_ids_.empty();
+        });
+    }
+
+    if (closed)
+    {
+        CefShutdown();
+        LOG_INFO("CEF Browser manager shut down successfully.");
+    }
+    else
+    {
+        // CefShutdown() must not run while a browser is still alive, so prefer leaking CEF
+        // state over crashing on exit - the process is going away anyway.
+        LOG_ERROR("[CEF] Browsers did not close within {} s - skipping CefShutdown().", kCloseTimeoutSec);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(shutdown_mutex_);
+        shutdown_sweep_done_ = false;
+    }
+
     initialized_ = false;
-
-    LOG_INFO("CEF Browser manager shut down successfully.");
 }
 
 void BrowserManager::CreateBrowser(
@@ -637,6 +764,12 @@ void BrowserManager::CreateBrowserInternal(
                                    controls_chat,
                                    width,
                                    height));
+        return;
+    }
+
+    if (is_shutting_down_)
+    {
+        LOG_WARN("[CEF] CreateBrowserInternal: ignored, the browser manager is shutting down.");
         return;
     }
 
@@ -724,6 +857,12 @@ void BrowserManager::CreateWorldBrowserInternal(
         return;
     }
 
+    if (is_shutting_down_)
+    {
+        LOG_WARN("[CEF] CreateWorldBrowserInternal: ignored, the browser manager is shutting down.");
+        return;
+    }
+
     if (browsers_.count(id))
     {
         LOG_ERROR("[CEF] CreateWorldBrowserInternal: Browser with ID {} already exists (race condition?).", id);
@@ -782,6 +921,12 @@ void BrowserManager::CreateWorld2DBrowserInternal(
                 offsetZ,
                 pivotX,
                 pivotY));
+        return;
+    }
+
+    if (is_shutting_down_)
+    {
+        LOG_WARN("[CEF] CreateWorld2DBrowserInternal: ignored, the browser manager is shutting down.");
         return;
     }
 
@@ -969,6 +1114,15 @@ void BrowserManager::DestroyBrowser(int id)
     if (instance->browser && instance->browser->GetHost())
     {
         instance->view.SetFocused(false);
+        // Only registered when we are the ones starting the close: a browser that CEF is
+        // already closing (DoClose ran) delivers exactly one OnBeforeClose, so a second
+        // request here would leave an id behind that is never cleared.
+        if (!instance->closing)
+        {
+            std::lock_guard<std::mutex> lock(shutdown_mutex_);
+            outstanding_close_ids_.insert(id);
+        }
+
         instance->browser->GetHost()->CloseBrowser(true);
         instance->browser = nullptr;
     }
@@ -1157,6 +1311,23 @@ CEntity* BrowserManager::GetEntityFromObjectId(int objectId)
 
 void BrowserManager::OnBrowserCreated(int id, CefRefPtr<CefBrowser> browser)
 {
+    if (is_shutting_down_)
+    {
+        // Shutdown already swept the map, so this browser is not tracked any more. Close it
+        // here, otherwise CefShutdown() could run while it is still alive. If the shutdown
+        // wait is still running, count it so that it waits for this browser too.
+        LOG_WARN("[CEF] Browser {} finished creating during shutdown - closing it.", id);
+
+        {
+            std::lock_guard<std::mutex> lock(shutdown_mutex_);
+            outstanding_close_ids_.insert(id);
+        }
+
+        if (browser && browser->GetHost())
+            browser->GetHost()->CloseBrowser(true);
+        return;
+    }
+
     auto it = browsers_.find(id);
     if (it != browsers_.end())
     {
@@ -1176,8 +1347,43 @@ void BrowserManager::OnBrowserCreated(int id, CefRefPtr<CefBrowser> browser)
     }
 }
 
-void BrowserManager::OnBrowserClosed(int id)
+void BrowserManager::OnBrowserClosing(int id, CefRefPtr<CefBrowser> browser)
 {
+    // CEF UI thread. The entry stays in the map until OnBeforeClose arrives, but it must not
+    // be drawn or updated any more - RenderAll and SetBrowserLayer already skip instances
+    // whose closing flag is set.
+    auto it = browsers_.find(id);
+    if (it == browsers_.end() || !it->second)
+        return;
+
+    // Only act when the callback belongs to the browser this entry holds right now: after a
+    // destroy the id can be reused by a new create, and flagging that browser as closing
+    // would stop it from ever being drawn.
+    if (!browser || !it->second->browser || !it->second->browser->IsSame(browser))
+        return;
+
+    it->second->closing = true;
+}
+
+void BrowserManager::OnBrowserClosed(int id, CefRefPtr<CefBrowser> browser)
+{
+    // Release the shutdown bookkeeping first: the id has to leave the outstanding set even
+    // when the entry below turns out to belong to a newer browser that reused the id.
+    {
+        std::lock_guard<std::mutex> lock(shutdown_mutex_);
+        outstanding_close_ids_.erase(id);
+    }
+    shutdown_cv_.notify_all();
+
+    auto it = browsers_.find(id);
+    if (it != browsers_.end() && it->second && it->second->browser && browser &&
+        !it->second->browser->IsSame(browser))
+    {
+        // The id was reused: this callback belongs to the browser that closed before the
+        // current one was created, so the new entry is left alone.
+        return;
+    }
+
     player_stats_poll_.erase(id);
     screen_capture_.Stop(id);
     pending_.erase(id);
@@ -1364,7 +1570,7 @@ void BrowserManager::RequestTextureClear(int id)
 
 void BrowserManager::OnPaint(int id, const void* buffer, int width, int height, const cef_rect_t* dirtyRects, size_t dirtyRectCount)
 {
-    if (isCefUpdatesPaused_ || !buffer || width <= 0 || height <= 0)
+    if (is_shutting_down_ || isCefUpdatesPaused_ || !buffer || width <= 0 || height <= 0)
         return;
 
     auto* instance = GetBrowserInstance(id);
@@ -1468,6 +1674,11 @@ void BrowserManager::DispatchExternalBeginFramesOnUi()
 
 bool BrowserManager::RenderAll()
 {
+    // Nothing may be drawn while the manager is tearing down: the CEF UI thread is emptying
+    // the maps at that point and the rendering hooks are about to be shut down.
+    if (is_shutting_down_)
+        return false;
+
     UpdateNativeUiInput();
 
     if (ShouldSkipBrowserRendering())

@@ -26,17 +26,32 @@ static bool SendEmitToBrowser(BrowserManager& browserManager, int browserId, con
 
     CefRefPtr<CefBrowser> browser = instance->browser;
     if (!browser)
+    {
+        // The instance exists but CEF has not finished creating the browser yet. The
+        // server is expected to wait for the create result before emitting events, so
+        // this is worth knowing about rather than dropping the event in silence.
+        LOG_DEBUG("[CEF] Event '{}' for browser {} arrived before the browser was ready - dropped.", name, browserId);
         return false;
+    }
 
     if (!browser->IsValid())
+    {
+        LOG_WARN("[CEF] Event '{}' dropped: browser {} is no longer valid (it is closing).", name, browserId);
         return false;
+    }
 
     CefRefPtr<CefFrame> frame = browser->GetMainFrame();
     if (!frame)
+    {
+        LOG_WARN("[CEF] Event '{}' dropped: browser {} has no main frame.", name, browserId);
         return false;
+    }
 
     if (!frame->IsValid())
+    {
+        LOG_WARN("[CEF] Event '{}' dropped: the main frame of browser {} is gone.", name, browserId);
         return false;
+    }
 
     CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("emit_event");
     CefRefPtr<CefListValue> list = msg->GetArgumentList();
@@ -72,7 +87,11 @@ static bool SendEmitToBrowser(BrowserManager& browserManager, int browserId, con
         }
     }
 
+    // CefFrame::SendProcessMessage returns void in this CEF version (the documentation
+    // states that delivery is not guaranteed and gives no result), so a failure cannot be
+    // detected here. The validity checks above are the only signal available.
     frame->SendProcessMessage(PID_RENDERER, msg);
+
     return true;
 }
 

@@ -130,6 +130,26 @@ void BrowserClient::OnAfterCreated(CefRefPtr<CefBrowser> browser)
     browser->GetMainFrame()->ExecuteJavaScript(control_chat_js_script, browser->GetMainFrame()->GetURL(), 0);
 }
 
+bool BrowserClient::DoClose(CefRefPtr<CefBrowser> browser)
+{
+    CEF_REQUIRE_UI_THREAD();
+
+    // Fires before the browser goes away, including closes that CEF starts on its own
+    // (window.close(), CefShutdown). Returning false lets CEF continue with the close;
+    // we only need to know that this instance must not be drawn any more.
+    manager_.OnBrowserClosing(browserId_, browser);
+    return false;
+}
+
+void BrowserClient::OnBeforeClose(CefRefPtr<CefBrowser> browser)
+{
+    CEF_REQUIRE_UI_THREAD();
+
+    // Without this callback a browser that CEF closes by itself kept its entry in the
+    // manager forever, so events for it were dropped instead of reaching a live browser.
+    manager_.OnBrowserClosed(browserId_, browser);
+}
+
 void BrowserClient::GetViewRect(CefRefPtr<CefBrowser> /*browser*/, CefRect& rect)
 {
     rect = manager_.GetBrowserInstance(browserId_)->view.rect();

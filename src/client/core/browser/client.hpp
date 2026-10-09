@@ -36,6 +36,8 @@ public:
 
     // CefLifeSpanHandler overrides
     void OnAfterCreated(CefRefPtr<CefBrowser> browser) override;
+    bool DoClose(CefRefPtr<CefBrowser> browser) override;
+    void OnBeforeClose(CefRefPtr<CefBrowser> browser) override;
 
     // CefRenderHandler overrides
     void GetViewRect(CefRefPtr<CefBrowser> browser, CefRect& rect) override;
