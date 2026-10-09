@@ -93,7 +93,7 @@ void NetworkManager::Connect(int playerid)
 	playerid_ = playerid;
 	join_attempts_ = 0;
 
-	LOG_INFO("[CLIENT] Connecting to server for playerid {}...", playerid_);
+	LOG_INFO("[CLIENT] Connecting to server for playerid {}...", playerid_.load());
 
 	try {
 		if (io_context_.stopped()) io_context_.restart();
@@ -170,7 +170,7 @@ void NetworkManager::DoSendRequestJoin()
 		return;
 	}
 
-	LOG_INFO("[CLIENT] Sending RequestJoin packet (attempt {}/{})...", join_attempts_, MAX_JOIN_ATTEMPTS);
+	LOG_INFO("[CLIENT] Sending RequestJoin packet (attempt {}/{})...", join_attempts_.load(), MAX_JOIN_ATTEMPTS);
 
 	RequestJoinPacket pkt{ playerid_, PLUGIN_VERSION_U32 };
 	SendPacket(PacketType::RequestJoin, pkt);
