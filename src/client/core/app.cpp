@@ -104,6 +104,7 @@ void App::Initialize()
     });
 
     resources_.Initialize();
+    resources_.SetFailureHandler([this](const char* reason) { FailPendingCreates(reason); });
 }
 
 void App::ResetSession()
@@ -364,6 +365,7 @@ void App::Tick()
     browser_.TickGameData();
     browser_.CaptureScreen();
     browser_.RenderAll();
+    resources_.Update(now);
     
     if (pending_clear_chat_.exchange(false, std::memory_order_acq_rel))
     {

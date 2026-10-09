@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <string>
@@ -24,7 +25,8 @@ enum class DownloadState
 	AWAITING_TRIGGER,
 	VERIFYING_CACHE,
 	DOWNLOADING,
-	COMPLETED
+	COMPLETED,
+	FAILED
 };
 
 class ResourceManager
@@ -56,6 +58,9 @@ public:
 	void TriggerDownload();
 
 	void OnFileData(const FileDataPacket& packet);
+
+	void Update(uint64_t nowMs);
+	void SetFailureHandler(std::function<void(const char*)> handler);
 
 	bool GetFileContent(const std::string& resourceName,
 		const std::string& internalPath,
@@ -106,4 +111,8 @@ private:
 	std::map<std::string, FileAssemblyData> assembling_files_;
 
 	std::chrono::steady_clock::time_point last_packet_time_;
+	void Fail(const char* reason);
+	std::function<void(const char*)> on_failed_;
+	uint64_t state_since_ms_ = 0;
+	DownloadState last_observed_state_ = DownloadState::IDLE;
 };
