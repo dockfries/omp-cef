@@ -948,6 +948,11 @@ void CefPlugin::HandleClientEvent(int playerid, const ClientEmitEventPacket& pay
     const auto& reg = it->second;
     const auto& signature = reg.signature;
 
+    // Copy the callback name before dispatching: the bridge looks it up again for every side
+    // script, and a callback that re-registers this same event replaces the stored name, so
+    // the remaining scripts of this dispatch would be called with the new name.
+    const std::string callback = reg.callback;
+
     if (signature.size() != payload.args.size())
     {
         LOG_WARN("Argument count mismatch for event '%s' (callback '%s'). Expected %zu, got %zu.",
@@ -975,7 +980,7 @@ void CefPlugin::HandleClientEvent(int playerid, const ClientEmitEventPacket& pay
     final_args.emplace_back(payload.browserId);
     final_args.insert(final_args.end(), payload.args.begin(), payload.args.end());
 
-    bridge_->CallPawnPublic(reg.callback, final_args);
+    bridge_->CallPawnPublic(callback, final_args);
 }
 
 void CefPlugin::RegisterEvent(const std::string& name, const std::string& callback, const std::vector<ArgumentType>& signature)
