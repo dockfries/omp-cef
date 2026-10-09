@@ -2,7 +2,7 @@
 # https://git-cliff.org/docs/configuration
 
 [remote.github]
-owner = "aurora-mp"
+owner = "dockfries"
 repo = "omp-cef"
 
 [changelog]
@@ -69,7 +69,7 @@ trim = true
 # An array of regex based postprocessors to modify the changelog.
 postprocessors = [
   # Replace the placeholder `<REPO>` with a URL.
-  { pattern = '<REPO>', replace = "https://github.com/aurora-mp/omp-cef" },
+  { pattern = '<REPO>', replace = "https://github.com/dockfries/omp-cef" },
 ]
 
 [git]

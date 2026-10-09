@@ -1,40 +1,73 @@
 
-## [1.4.1](https://github.com/aurora-mp/omp-cef/compare/v1.4.0..v1.4.1) (2026-09-09)
-
-### 📖 Documentation
-
-- Add zh-CN README and clean changelog - ([5814d78](https://github.com/aurora-mp/omp-cef/commit/5814d7823549648fcc54e9b71aac2d312b69ddff))
-- Fix duplicate changelog entries - ([ecc1d9c](https://github.com/aurora-mp/omp-cef/commit/ecc1d9c32dfc8233c82c8c88784b2f1e555fa9c9))
-
-### 🐛 Bug Fixes
-
-- *(client)* Address for 037r5 - ([ca6571c](https://github.com/aurora-mp/omp-cef/commit/ca6571c58286899d7c3043efa4c5185efcb540d7))
-
-### 🤖 CI
-
-- Build and publish cef-samp for x86 and x64 - ([24da1de](https://github.com/aurora-mp/omp-cef/commit/24da1defb29535f47bcf6ea6c24338c0bcad19db))
-
-### 📦 Build
-
-- *(sampgdk)* Update to 5.0.0 with fixes - ([cca43aa](https://github.com/aurora-mp/omp-cef/commit/cca43aa4668be7eb107e00bcbe3c70e7bb973e80))
-- *(sampgdk)* Add x64 support - ([38226b5](https://github.com/aurora-mp/omp-cef/commit/38226b549762ef9390d4621c6bcfd0328d3e7912))
-- Consume sampgdk as a git submodule - ([fdf97df](https://github.com/aurora-mp/omp-cef/commit/fdf97df54f06b97fd32f2914f27191c7f62706c3))
-
-
-
-## [1.4.0](https://github.com/aurora-mp/omp-cef/compare/v1.3.0..v1.4.0) (2026-08-10)
+## [1.4.2](https://github.com/dockfries/omp-cef/compare/v1.4.1..v1.4.2) (2026-10-09)
 
 ### 🧹 Chore
 
-- Update CHANGELOG for v1.4.0 - ([692db89](https://github.com/aurora-mp/omp-cef/commit/692db899a2ceb70be0eb1a47d49e775d6c98c88d))
+- Drop the UTF-8 BOM from the remaining sources - ([ba003d1](https://github.com/dockfries/omp-cef/commit/ba003d1c4870a60eec6829b2535a46c62568ccb7))
+- Replace the remaining non-ASCII characters in sources - ([04056cb](https://github.com/dockfries/omp-cef/commit/04056cb2fe9c6212c74cd8764aa9aaa6f49ba65f))
+- Bump version to 1.4.2 - ([4878826](https://github.com/dockfries/omp-cef/commit/4878826508a4caae5613f9476e4c8acf6905a98b))
 
 ### ✨ Features
 
-- *(client)* Expose game screen capture to CEF - ([c7056eb](https://github.com/aurora-mp/omp-cef/commit/c7056eb28de7722a5383990edf0d07eebf1b9507))
+- Add browser layer control - ([ec3a19a](https://github.com/dockfries/omp-cef/commit/ec3a19a362981c95c3ba56fd2eedebbead988de4))
 
 ### 🐛 Bug Fixes
 
-- *(client)* Restore static CEF textures after Alt+Tab - ([6a7412a](https://github.com/aurora-mp/omp-cef/commit/6a7412ad0caf6236e5a3058515927fb1f3b131c8))
+- *(client)* Harden SA-MP version detection - ([d26225c](https://github.com/dockfries/omp-cef/commit/d26225ca70f7d24ce8ef40266f7267b7f421868b))
+- *(client)* Move cross-thread game state onto the game thread - ([1591759](https://github.com/dockfries/omp-cef/commit/15917592902e5906ddd79de0c6ffb83db0e9ab81))
+- *(omp)* Release string arguments of registered event callbacks - ([9b2e968](https://github.com/dockfries/omp-cef/commit/9b2e968396483c9ee4b23d9ddbf2d536a8e7896b))
+- *(samp)* Stop rewinding the AMX heap when a string argument cannot be pushed - ([f064c77](https://github.com/dockfries/omp-cef/commit/f064c771bfb92436fa7f908978d59c2c0c51278c))
+- *(server)* Invalidate the Pawn bridge, surface startup failures, dedupe file requests - ([3968249](https://github.com/dockfries/omp-cef/commit/3968249cc74df4ecc5a02df010709c0ba1dea3af))
+- *(server)* Validate cookie and client public key lengths - ([d79b914](https://github.com/dockfries/omp-cef/commit/d79b914a2f9f67c6528681b645ea1f95519329d8))
+- Prepare fork release builds and sampctl resources - ([19056cc](https://github.com/dockfries/omp-cef/commit/19056ccaba62766d7f919d2fcadccc85af2dfb64))
+
+### 🤖 CI
+
+- Fail the release when the embedded version does not match the requested one - ([c17fdbd](https://github.com/dockfries/omp-cef/commit/c17fdbdb513b824a59ef62418ed48b7adba67b3e))
+
+### 📦 Build
+
+- Compile MSVC sources and narrow literals as UTF-8 - ([ddae45b](https://github.com/dockfries/omp-cef/commit/ddae45b67c1d5eec681272b6e1c93784755dafd9))
+
+
+
+
+## [1.4.1](https://github.com/dockfries/omp-cef/compare/v1.4.0..v1.4.1) (2026-09-09)
+
+### 📖 Documentation
+
+- Add zh-CN README and clean changelog - ([5814d78](https://github.com/dockfries/omp-cef/commit/5814d7823549648fcc54e9b71aac2d312b69ddff))
+- Fix duplicate changelog entries - ([ecc1d9c](https://github.com/dockfries/omp-cef/commit/ecc1d9c32dfc8233c82c8c88784b2f1e555fa9c9))
+
+### 🐛 Bug Fixes
+
+- *(client)* Address for 037r5 - ([ca6571c](https://github.com/dockfries/omp-cef/commit/ca6571c58286899d7c3043efa4c5185efcb540d7))
+
+### 🤖 CI
+
+- Build and publish cef-samp for x86 and x64 - ([24da1de](https://github.com/dockfries/omp-cef/commit/24da1defb29535f47bcf6ea6c24338c0bcad19db))
+
+### 📦 Build
+
+- *(sampgdk)* Update to 5.0.0 with fixes - ([cca43aa](https://github.com/dockfries/omp-cef/commit/cca43aa4668be7eb107e00bcbe3c70e7bb973e80))
+- *(sampgdk)* Add x64 support - ([38226b5](https://github.com/dockfries/omp-cef/commit/38226b549762ef9390d4621c6bcfd0328d3e7912))
+- Consume sampgdk as a git submodule - ([fdf97df](https://github.com/dockfries/omp-cef/commit/fdf97df54f06b97fd32f2914f27191c7f62706c3))
+
+
+
+## [1.4.0](https://github.com/dockfries/omp-cef/compare/v1.3.0..v1.4.0) (2026-08-10)
+
+### 🧹 Chore
+
+- Update CHANGELOG for v1.4.0 - ([692db89](https://github.com/dockfries/omp-cef/commit/692db899a2ceb70be0eb1a47d49e775d6c98c88d))
+
+### ✨ Features
+
+- *(client)* Expose game screen capture to CEF - ([c7056eb](https://github.com/dockfries/omp-cef/commit/c7056eb28de7722a5383990edf0d07eebf1b9507))
+
+### 🐛 Bug Fixes
+
+- *(client)* Restore static CEF textures after Alt+Tab - ([6a7412a](https://github.com/dockfries/omp-cef/commit/6a7412ad0caf6236e5a3058515927fb1f3b131c8))
 
 
 ## [1.3.0](https://github.com/aurora-mp/omp-cef/compare/v1.2.0..v1.3.0) (2026-06-19)
