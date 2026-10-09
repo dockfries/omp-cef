@@ -662,7 +662,6 @@ void BrowserManager::CreateBrowser(
     int id, const std::string& url, bool focused, bool controls_chat, float width, float height)
 {
     LOG_DEBUG("[CEF] CreateBrowser called with ID={}, url={}", id, url);
-    LOG_DEBUG("[TRACE] 1 CreateBrowser enter id={}", id);
     
     auto existing = browsers_.find(id);
     if (existing != browsers_.end())
@@ -777,7 +776,6 @@ void BrowserManager::CreateBrowserInternal(
         if (!device) return;
 
         inst->view.Initialize(device);
-        LOG_DEBUG("[TRACE] 2 view init enter");
 
         int browser_width  = (int)width;
         int browser_height = (int)height;
@@ -1059,7 +1057,6 @@ void BrowserManager::SetBrowserVisible(int id, bool visible)
 
 void BrowserManager::DestroyBrowser(int id)
 {
-    LOG_DEBUG("[TRACE] 4 DestroyBrowser enter");
     if (!CefCurrentlyOn(TID_UI))
     {
         CefPostTask(TID_UI, base::BindOnce(&BrowserManager::DestroyBrowser, base::Unretained(this), id));
@@ -1126,12 +1123,11 @@ void BrowserManager::ReleaseOnMainThread(std::shared_ptr<void> resource)
     // The task below is what destroys the object: the main-thread queue holds the last
     // reference until it has run the task and released it, so the D3D texture is freed on
     // the render thread instead of the CEF UI thread.
-    gta_.PostToMainThread([resource]() mutable { LOG_DEBUG("[TRACE] 6 release enter"); resource.reset(); LOG_DEBUG("[TRACE] 6 release exit"); });
+    gta_.PostToMainThread([resource]() mutable { resource.reset(); });
 }
 
 void BrowserManager::ReleaseBrowserResources(int id, BrowserInstance& instance)
 {
-    LOG_DEBUG("[TRACE] 5 ReleaseBrowserResources enter");
     if (instance.browser && instance.browser->GetHost())
         instance.browser->GetHost()->CloseDevTools();
 
@@ -1153,7 +1149,7 @@ void BrowserManager::ReleaseBrowserResources(int id, BrowserInstance& instance)
         renderer = wrIt->second;
 
     if (renderer)
-        gta_.PostToMainThread([renderer]() { LOG_DEBUG("[TRACE] 7 restore tex enter"); renderer->RestoreTexture(); LOG_DEBUG("[TRACE] 7 restore tex exit"); });
+        gta_.PostToMainThread([renderer]() { renderer->RestoreTexture(); });
 
     for (auto eit = entityToBrowserId_.begin(); eit != entityToBrowserId_.end();)
     {
@@ -1196,6 +1192,13 @@ void BrowserManager::PublishSnapshot()
         next->entities.push_back({ entity, it->second, it->second->renderer });
     }
 
+    next->renderers.reserve(browsers_.size());
+    for (auto& [id, instance] : browsers_)
+    {
+        if (instance && instance->renderer)
+            next->renderers.push_back(instance->renderer);
+    }
+
     std::lock_guard<std::mutex> lock(snapshot_mutex_);
     snapshot_ = std::move(next);
 }
@@ -1233,6 +1236,9 @@ void BrowserManager::SetWorldRendererOnUi(int id, std::shared_ptr<WorldRenderer>
     }
 
     it->second->renderer = std::move(renderer);
+
+    // The attach may have published its binding before this renderer arrived.
+    PublishSnapshot();
 }
 
 void BrowserManager::DestroyAllBrowsers()
@@ -1425,7 +1431,7 @@ void BrowserManager::DetachBrowserFromObject(int browserId, int objectId)
             auto* detachInstance = GetBrowserInstance(browserId);
             std::shared_ptr<WorldRenderer> renderer = detachInstance ? detachInstance->renderer : nullptr;
             if (renderer)
-                gta_.PostToMainThread([renderer]() { LOG_DEBUG("[TRACE] 7 restore tex enter"); renderer->RestoreTexture(); LOG_DEBUG("[TRACE] 7 restore tex exit"); });
+                gta_.PostToMainThread([renderer]() { renderer->RestoreTexture(); });
 
             entityToBrowserId_.erase(it);
             PublishSnapshot();
@@ -1453,7 +1459,6 @@ CEntity* BrowserManager::GetEntityFromObjectId(int objectId)
 
 void BrowserManager::OnBrowserCreated(int id, CefRefPtr<CefBrowser> browser)
 {
-    LOG_DEBUG("[TRACE] 3 OnBrowserCreated enter");
     if (is_shutting_down_)
     {
         // Shutdown already swept the map, so this browser is not tracked any more. Close it
@@ -2333,17 +2338,19 @@ void BrowserManager::OnDeviceLost()
     {
         if (instance) 
         {
-            LOG_DEBUG("[BrowserManager] Releasing browser {} View resources", id);
+            LOG_DEBUG("[BrowserManager] Releasing browser {} View resources", instance->id);
             instance->view.OnDeviceLost();
         }
     }
     
     // Release all WorldRenderer resources (3D world browsers)
-    for (auto& [browserId, renderer] : worldRenderers_) 
+    const auto snapshot = Snapshot();
+
+    for (const auto& renderer : snapshot->renderers)
     {
         if (renderer)
         {
-            LOG_DEBUG("[BrowserManager] Releasing WorldRenderer for browser {} resources", browserId);
+            LOG_DEBUG("[BrowserManager] Releasing WorldRenderer resources");
             renderer->OnDeviceLost();
         }
     }
@@ -2356,17 +2363,19 @@ void BrowserManager::OnDeviceReset(IDirect3DDevice9* device)
     {
         if (instance) 
         {
-            LOG_DEBUG("[BrowserManager] Recreating browser {} View resources", id);
+            LOG_DEBUG("[BrowserManager] Recreating browser {} View resources", instance->id);
             instance->view.OnDeviceReset(device);
         }
     }
     
     // Recreate all WorldRenderer resources (3D world browsers)
-    for (auto& [browserId, renderer] : worldRenderers_) 
+    const auto snapshot = Snapshot();
+
+    for (const auto& renderer : snapshot->renderers)
     {
         if (renderer) 
         {
-            LOG_DEBUG("[BrowserManager] Recreating WorldRenderer for browser {} resources", browserId);
+            LOG_DEBUG("[BrowserManager] Recreating WorldRenderer resources");
             renderer->OnDeviceReset(device);
         }
     }

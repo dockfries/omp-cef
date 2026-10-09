@@ -125,6 +125,7 @@ struct RenderSnapshot
 {
     std::vector<std::shared_ptr<BrowserInstance>> browsers;
     std::vector<EntityBinding> entities;
+    std::vector<std::shared_ptr<WorldRenderer>> renderers;
 };
 
 class BrowserManager
