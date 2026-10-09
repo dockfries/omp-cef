@@ -1064,7 +1064,6 @@ void BrowserManager::DestroyBrowser(int id)
     }
 
     player_stats_poll_.erase(id);
-    pending_.erase(id);
     CancelDrag(id);
 
     auto it = browsers_.find(id);
@@ -1143,10 +1142,7 @@ void BrowserManager::ReleaseBrowserResources(int id, BrowserInstance& instance)
     CancelDrag(id);
     screen_capture_.Stop(id);
 
-    std::shared_ptr<WorldRenderer> renderer;
-    auto wrIt = worldRenderers_.find(id);
-    if (wrIt != worldRenderers_.end())
-        renderer = wrIt->second;
+std::shared_ptr<WorldRenderer> renderer = std::move(instance.renderer);
 
     if (renderer)
         gta_.PostToMainThread([renderer]() { renderer->RestoreTexture(); });
@@ -1163,12 +1159,6 @@ void BrowserManager::ReleaseBrowserResources(int id, BrowserInstance& instance)
         }
     }
 
-    wrIt = worldRenderers_.find(id);
-    if (wrIt != worldRenderers_.end())
-    {
-        ReleaseOnMainThread(std::move(wrIt->second));
-        worldRenderers_.erase(wrIt);
-    }
 }
 
 void BrowserManager::PublishSnapshot()
@@ -1529,7 +1519,6 @@ void BrowserManager::OnBrowserClosed(int id, CefRefPtr<CefBrowser> browser)
     LOG_DEBUG("[CEF] Browser {} closed.", id);
 
     player_stats_poll_.erase(id);
-    pending_.erase(id);
 
     // A browser CEF closes by itself (window.close()) has to release the same resources as the
     // destroy path, otherwise a world browser keeps its swapped texture and entity mapping.
@@ -1661,10 +1650,7 @@ void BrowserManager::RestoreBrowserTextures()
 
         if (instance->mode == RenderMode::WorldObject3D)
         {
-            auto world_renderer = worldRenderers_.find(id);
-            if (world_renderer != worldRenderers_.end() && world_renderer->second)
-            {
-                world_renderer->second->OnPaint(
+            if (instance->renderer)             {                 instance->renderer->OnPaint(
                     pending_paint.pixels.data(),
                     pending_paint.width,
                     pending_paint.height

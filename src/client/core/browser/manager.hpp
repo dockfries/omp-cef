@@ -316,7 +316,6 @@ private:
     // D3D/RenderWare resources and must be destroyed on the game (render) thread, so the
     // entries are handed over instead of being destroyed in place - see ReleaseOnMainThread.
     std::unordered_map<int, std::shared_ptr<BrowserInstance>> browsers_;
-    std::unordered_map<int, std::shared_ptr<WorldRenderer>> worldRenderers_;
     std::unordered_map<CEntity*, int> entityToBrowserId_;
     std::vector<std::pair<int, int>> pending_attaches_;
 
@@ -345,7 +344,6 @@ private:
 
     std::function<CEntity*(int)> entity_resolver_{};
 
-    std::unordered_map<int, PendingPaint> pending_;
     std::atomic<bool> begin_frame_task_pending_{false};
 
     struct DragState
