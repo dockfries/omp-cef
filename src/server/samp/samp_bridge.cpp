@@ -11,6 +11,24 @@
 
 extern std::vector<AMX*> g_AmxList;
 
+namespace
+{
+    // amx_PushString only writes its out parameter when the allocation succeeded,
+    // so a caller must never use that address as a release point on failure:
+    // amx_Release(amx, 0) rewinds the heap pointer into the script's data segment.
+    // These helpers report the failure instead, letting the callers skip amx_Exec
+    // (a public entered with a missing argument reads a stale stack cell).
+    bool PushCell(AMX* amx, cell value)
+    {
+        return amx_Push(amx, value) == AMX_ERR_NONE;
+    }
+
+    bool PushText(AMX* amx, const char* text)
+    {
+        return amx_PushString(amx, nullptr, nullptr, text, 0, 0) == AMX_ERR_NONE;
+    }
+}
+
 std::unique_ptr<IPlatformBridge> CreateSampPlatformBridge()
 {
     return std::make_unique<SampPlatformBridge>();
@@ -44,50 +62,64 @@ void SampPlatformBridge::CallPawnPublic(const std::string& name, const std::vect
         if (amx_FindPublic(amx, name.c_str(), &idx) != AMX_ERR_NONE)
             continue;
 
-        cell heap_addr_before_push = 0;
-        bool string_pushed = false;
+        // Heap top before any string is allotted: releasing back to this point frees
+        // every string cell at once (the AMX heap grows upwards), which is what
+        // open.mp's IPawnScript::CallChecked does as well.
+        const cell heap_before_push = amx->hea;
+        const cell stk_before_push = amx->stk;
+        const int params_before_push = amx->paramcount;
+        bool push_failed = false;
 
         for (auto it = args.rbegin(); it != args.rend(); ++it)
         {
             const auto& arg = *it;
+            bool pushed = true;
+
             switch (arg.type)
             {
                 case ArgumentType::String:
                 {
-                    cell amx_addr = 0;
-                    
                     std::string ansi_string = Utf8ToAnsi(arg.stringValue);
-                    amx_PushString(amx, &amx_addr, NULL, ansi_string.c_str(), 0, 0);
-
-                    if (!string_pushed) {
-                        heap_addr_before_push = amx_addr;
-                        string_pushed = true;
-                    }
+                    pushed = PushText(amx, ansi_string.c_str());
                     break;
                 }
                 case ArgumentType::Integer:
-                    amx_Push(amx, arg.intValue);
+                    pushed = PushCell(amx, arg.intValue);
                     break;
                 case ArgumentType::Float:
-                    amx_Push(amx, amx_ftoc(arg.floatValue));
+                    pushed = PushCell(amx, amx_ftoc(arg.floatValue));
                     break;
                 case ArgumentType::Bool:
-                    amx_Push(amx, arg.boolValue);
+                    pushed = PushCell(amx, arg.boolValue);
                     break;
+            }
+
+            if (!pushed)
+            {
+                push_failed = true;
+                LogError("CallPawnPublic(" + name + "): failed to push an argument (script out of memory?), callback skipped.");
+                break;
             }
         }
 
-        cell ret;
-        int error = amx_Exec(amx, &ret, idx);
-        if (error != AMX_ERR_NONE)
+        if (!push_failed)
         {
-            // TODO
+            cell ret;
+            if (amx_Exec(amx, &ret, idx) != AMX_ERR_NONE)
+            {
+                LogError("CallPawnPublic(" + name + "): amx_Exec failed.");
+            }
+        }
+        else
+        {
+            // amx_Exec is what consumes the pushed parameters; without it the
+            // arguments already pushed would be handed to the next call, so
+            // rewind the argument stack to its pre-push state.
+            amx->stk = stk_before_push;
+            amx->paramcount = params_before_push;
         }
 
-        if (string_pushed)
-        {
-            amx_Release(amx, heap_addr_before_push);
-        }
+        amx_Release(amx, heap_before_push);
     }
 }
 
@@ -99,17 +131,32 @@ void SampPlatformBridge::CallOnBrowserCreated(int playerid, int browserId, bool 
         if (amx_FindPublic(amx, "OnCefBrowserCreated", &idx) != AMX_ERR_NONE) 
             continue;
 
-        cell reason_addr = 0;
+        // See CallPawnPublic: never release an address that may not have been allotted.
+        const cell heap_before_push = amx->hea;
+        const cell stk_before_push = amx->stk;
+        const int params_before_push = amx->paramcount;
 
-        amx_PushString(amx, &reason_addr, NULL, reason.c_str(), 0, 0);
-        amx_Push(amx, code);
-        amx_Push(amx, success);
-        amx_Push(amx, browserId);
-        amx_Push(amx, playerid);
+        bool pushed = true;
+        pushed = PushText(amx, reason.c_str()) && pushed;
+        pushed = PushCell(amx, code) && pushed;
+        pushed = PushCell(amx, success) && pushed;
+        pushed = PushCell(amx, browserId) && pushed;
+        pushed = PushCell(amx, playerid) && pushed;
 
-        cell retval;
-        amx_Exec(amx, &retval, idx);
-        amx_Release(amx, reason_addr);
+        if (pushed)
+        {
+            cell retval;
+            if (amx_Exec(amx, &retval, idx) != AMX_ERR_NONE)
+                LogError("CallOnBrowserCreated: amx_Exec failed.");
+        }
+        else
+        {
+            LogError("CallOnBrowserCreated: failed to push an argument, callback skipped.");
+            amx->stk = stk_before_push;
+            amx->paramcount = params_before_push;
+        }
+
+        amx_Release(amx, heap_before_push);
     }
 }
 
@@ -144,21 +191,37 @@ void SampPlatformBridge::CallOnDownloadProgress(
         if (amx_FindPublic(amx, "OnCefDownloadProgress", &idx) != AMX_ERR_NONE)
             continue;
 
-        cell file_name_addr = 0;
+        // See CallPawnPublic: never release an address that may not have been allotted.
+        const cell heap_before_push = amx->hea;
+        const cell stk_before_push = amx->stk;
+        const int params_before_push = amx->paramcount;
+
         std::string ansi_file_name = Utf8ToAnsi(fileName);
 
-        amx_Push(amx, totalKb);
-        amx_Push(amx, totalDownloadedKb);
-        amx_Push(amx, fileTotalKb);
-        amx_Push(amx, fileDownloadedKb);
-        amx_Push(amx, totalPercent);
-        amx_Push(amx, filePercent);
-        amx_PushString(amx, &file_name_addr, NULL, ansi_file_name.c_str(), 0, 0);
-        amx_Push(amx, playerid);
+        bool pushed = true;
+        pushed = PushCell(amx, totalKb) && pushed;
+        pushed = PushCell(amx, totalDownloadedKb) && pushed;
+        pushed = PushCell(amx, fileTotalKb) && pushed;
+        pushed = PushCell(amx, fileDownloadedKb) && pushed;
+        pushed = PushCell(amx, totalPercent) && pushed;
+        pushed = PushCell(amx, filePercent) && pushed;
+        pushed = PushText(amx, ansi_file_name.c_str()) && pushed;
+        pushed = PushCell(amx, playerid) && pushed;
 
-        cell retval;
-        amx_Exec(amx, &retval, idx);
-        amx_Release(amx, file_name_addr);
+        if (pushed)
+        {
+            cell retval;
+            if (amx_Exec(amx, &retval, idx) != AMX_ERR_NONE)
+                LogError("CallOnDownloadProgress: amx_Exec failed.");
+        }
+        else
+        {
+            LogError("CallOnDownloadProgress: failed to push an argument, callback skipped.");
+            amx->stk = stk_before_push;
+            amx->paramcount = params_before_push;
+        }
+
+        amx_Release(amx, heap_before_push);
     }
 }
 
