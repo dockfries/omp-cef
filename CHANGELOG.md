@@ -1,4 +1,50 @@
 
+## [1.4.2](https://github.com/dockfries/omp-cef/compare/v1.4.1..v1.4.2) (2026-10-09)
+
+### 🧹 Chore
+
+- Reset the changelog for the 1.4.2 rebuild - ([98163bc](https://github.com/dockfries/omp-cef/commit/98163bc994124fe5c314ff338cdade8f78152373))
+- Drop the UTF-8 BOM from the remaining sources - ([33a0610](https://github.com/dockfries/omp-cef/commit/33a0610ead35e94c61eb9632d15aa0ee9bb1705f))
+- Replace the remaining non-ASCII characters in sources - ([f8fe81f](https://github.com/dockfries/omp-cef/commit/f8fe81fe2f23bfeb796a802c4c93cb7b18d3e46b))
+- Bump version to 1.4.2 - ([673b5b7](https://github.com/dockfries/omp-cef/commit/673b5b7f6ed0b485e38d707ac27be8a429261b6e))
+
+### ✨ Features
+
+- Add browser layer control - ([566f129](https://github.com/dockfries/omp-cef/commit/566f129528efbe51013bb532fc2b6e3a29edbc7c))
+
+### 🐛 Bug Fixes
+
+- *(ci)* Point generated changelog links at the repository that publishes the releases - ([fa792be](https://github.com/dockfries/omp-cef/commit/fa792be0923815fa4e673abb31c669e07b80cefb))
+- *(client)* Report browser creation failures to the server - ([2029147](https://github.com/dockfries/omp-cef/commit/20291476f6fc9d484ad4d99ccf64f5005abbdce9))
+- *(client)* Close browsers through CEF's lifecycle and shut CEF down in order - ([c9cf0a7](https://github.com/dockfries/omp-cef/commit/c9cf0a7e7b09ce9a10a18201920fae7cc75515de))
+- *(client)* Harden SA-MP version detection - ([760fe61](https://github.com/dockfries/omp-cef/commit/760fe614bf39c583778cc47f8697352651df5698))
+- *(client)* Move cross-thread game state onto the game thread - ([3e33e38](https://github.com/dockfries/omp-cef/commit/3e33e3801cc8c64addf5cb9f62fdc4a13be553fe))
+- *(client)* Detect SA-MP builds by PE signature before the version resource - ([ff70ba0](https://github.com/dockfries/omp-cef/commit/ff70ba0b50990dd8ccaf074f4faa00b49e9eb257))
+- *(omp)* Release string arguments of registered event callbacks - ([0501e53](https://github.com/dockfries/omp-cef/commit/0501e531bdd57acde926f5445cece3191cf714e8))
+- *(samp)* Stop running download and key callbacks after a failed push - ([a36ef36](https://github.com/dockfries/omp-cef/commit/a36ef366897ec4d8702c07b10ea805ba0f4d453e))
+- *(samp)* Stop rewinding the AMX heap when a string argument cannot be pushed - ([7f0a3a5](https://github.com/dockfries/omp-cef/commit/7f0a3a5a9e56ab4941b8ff0733ad397043534cd3))
+- *(server)* Dispatch a registered event with a copy of the callback name - ([9a5747f](https://github.com/dockfries/omp-cef/commit/9a5747f565ec7d6eec8bbfac1cd2e032c419eddc))
+- *(server)* Invalidate the Pawn bridge, surface startup failures, dedupe file requests - ([33cc5a4](https://github.com/dockfries/omp-cef/commit/33cc5a4417eb236fda5ee72457a7ec9d4f0143ef))
+- *(server)* Validate cookie and client public key lengths - ([e93edd4](https://github.com/dockfries/omp-cef/commit/e93edd461468b5b74cab1b72bf4212a74ee54aee))
+- *(server)* Run the network loop on the main thread - ([418992e](https://github.com/dockfries/omp-cef/commit/418992eee406a467ab03135f84e166c43db8db6b))
+- Prepare fork release builds and sampctl resources - ([ac5c64f](https://github.com/dockfries/omp-cef/commit/ac5c64feda3af2455f282881a32297b10a001264))
+
+### 🤖 CI
+
+- Fail the release when the embedded version does not match the requested one - ([3f5d22f](https://github.com/dockfries/omp-cef/commit/3f5d22f764c48d39ec87abad74b5379327954bd7))
+
+### 📦 Build
+
+- Compile MSVC sources and narrow literals as UTF-8 - ([5ec39ff](https://github.com/dockfries/omp-cef/commit/5ec39ff3c077ae03afce936ef7df57d7542d13fd))
+- Update CMakePresets.json - ([69041a2](https://github.com/dockfries/omp-cef/commit/69041a26b3d5572aed690dcc179d99cf54419547))
+
+## New Contributors ❤️
+
+* @wigarddev made their first contribution
+* @Masvidal99 made their first contribution
+
+
+
 ## [1.4.1](https://github.com/dockfries/omp-cef/compare/v1.4.0..v1.4.1) (2026-09-09)
 
 ### 📖 Documentation
