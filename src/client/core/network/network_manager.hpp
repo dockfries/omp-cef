@@ -47,6 +47,11 @@ public:
 
 	bool IsNonCefServer() const { return non_cef_server_.load(); }
 
+	// Joining a different server has to clear this latch, otherwise CEF stays
+	// disabled for the rest of the process (Initialize is only called while the
+	// latch is false, so it could never clear itself).
+	void ClearNonCefServerFlag() { non_cef_server_.store(false); }
+
 	using SessionActiveHandler = std::function<void(bool)>;
 	void SetSessionActiveHandler(SessionActiveHandler handler);
 

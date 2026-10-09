@@ -1,5 +1,11 @@
 #pragma once
 
+#include <mutex>
+#include <optional>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
 enum class EHudComponent 
 {
     ALL = 0,
@@ -32,11 +38,26 @@ public:
     HudManager& operator=(const HudManager&) = delete;
 
     void Initialize();
+
+    // These patch game code, which the game thread may be executing at the same
+    // time, so requests are queued from any thread and applied by Pump() on the
+    // game (render) thread. Requests from the same frame keep their order and the
+    // last class-selection request wins.
     void ToggleComponent(EHudComponent component, bool toggle);
     void SetClassSelectionVisible(bool visible);
 
+    // Applies everything queued so far. Call on the game/render thread (App::Tick).
+    void Pump();
+
 private:
+    void ApplyToggle(EHudComponent component, bool toggle);
+    void ApplyClassSelectionVisible(bool visible);
     void Patch(uintptr_t address, const std::vector<unsigned char>& data);
 
+    std::mutex queue_mutex_;
+    std::vector<std::pair<EHudComponent, bool>> pending_toggles_;
+    std::optional<bool> pending_class_selection_;
+
+    // Only touched by the game thread (Initialize + Pump).
     std::unordered_map<EHudComponent, HudPatchInfo> patches_;
 };

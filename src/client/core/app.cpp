@@ -94,9 +94,12 @@ void App::ResetSession()
         std::lock_guard<std::mutex> lock(pending_creates_mutex_);
         pending_creates_.clear();
     }
-    pending_emits_.clear();
+    {
+        std::lock_guard<std::mutex> lock(pending_emits_mutex_);
+        pending_emits_.clear();
+    }
     flushed_once_ = false;
-    pending_clear_chat_ = false;
+    pending_clear_chat_.store(false, std::memory_order_release);
 
     // Destroy all browsers
     browser_.DestroyAllBrowsers();
@@ -116,8 +119,15 @@ void App::FlushPendingIfReady()
     {
         flushed_once_ = true;
         network_.SendPacket(PacketType::DownloadComplete, {});
+
+        size_t pending_emit_count = 0;
+        {
+            std::lock_guard<std::mutex> emits_lock(pending_emits_mutex_);
+            pending_emit_count = pending_emits_.size();
+        }
+
         std::lock_guard<std::mutex> lock(pending_creates_mutex_);
-        LOG_DEBUG("[CEF] Resources completed -> flushing pending creates={}, emits={}.", (int)pending_creates_.size(), (int)pending_emits_.size());
+        LOG_DEBUG("[CEF] Resources completed -> flushing pending creates={}, emits={}.", (int)pending_creates_.size(), (int)pending_emit_count);
     }
 
     {
@@ -141,17 +151,23 @@ void App::FlushPendingIfReady()
             {
                 browser_.CreateWorld2DBrowser(crate.id, crate.url, crate.worldX, crate.worldY, crate.worldZ, crate.width, crate.height, crate.offsetZ, crate.pivotX, crate.pivotY);
             }
-            if (crate.kind != PendingCreate::Kind::World)
-                browser_.SetBrowserLayer(crate.id, crate.layer);
+            if (crate.kind != PendingCreate::Kind::World && crate.layer.has_value())
+                browser_.SetBrowserLayer(crate.id, *crate.layer);
         }
     }
 
-    if (!pending_emits_.empty())
+    std::vector<PendingEmit> emits;
+    {
+        std::lock_guard<std::mutex> lock(pending_emits_mutex_);
+        emits.swap(pending_emits_);
+    }
+
+    if (!emits.empty())
     {
         std::vector<PendingEmit> remaining;
-        remaining.reserve(pending_emits_.size());
+        remaining.reserve(emits.size());
 
-        for (const auto& emit : pending_emits_)
+        for (const auto& emit : emits)
         {
             auto* browser = browser_.GetBrowserInstance(emit.browserId);
             if (browser)
@@ -163,6 +179,14 @@ void App::FlushPendingIfReady()
                 remaining.push_back(emit);
             }
         }
+
+        std::lock_guard<std::mutex> lock(pending_emits_mutex_);
+
+        // Retries go first, then anything queued while we were sending.
+        std::vector<PendingEmit> queued;
+        queued.swap(pending_emits_);
+        for (auto& emit : queued)
+            remaining.push_back(std::move(emit));
 
         pending_emits_ = std::move(remaining);
     }
@@ -221,6 +245,30 @@ void App::Tick()
             connected_game_host_.clear();
             connected_game_port_ = 0;
             next_connect_attempt_ms_ = now + 500ULL;
+        }
+    }
+
+    // A server that does not speak the CEF protocol disables networking for the
+    // rest of the process. If the SA-MP endpoint is now a different one, the
+    // player moved to another server, so clear the latch and try again.
+    if (network_.IsNonCefServer() && net_endpoint_ready_ && netGame && netGame->IsConnected())
+    {
+        const std::string host = netGame->GetIp();
+        const int gamePort = netGame->GetPort();
+        const int cefPortInt = gamePort + cef_port_offset_;
+
+        if (!host.empty() && gamePort > 0 && cefPortInt > 0 && cefPortInt <= 65535)
+        {
+            const unsigned short cefPort = static_cast<unsigned short>(cefPortInt);
+
+            if (host != net_host_ || cefPort != net_port_)
+            {
+                LOG_INFO("[CEF] Endpoint is now {}:{} - re-enabling CEF networking.", host.c_str(), (int)cefPort);
+
+                network_.ClearNonCefServerFlag();
+                net_endpoint_ready_ = false;
+                next_connect_attempt_ms_ = now;
+            }
         }
     }
 
@@ -290,15 +338,16 @@ void App::Tick()
 
     FlushPendingIfReady();
 
+    // Queued HUD patches write to game code; apply them on this (game) thread.
+    hud_.Pump();
+
     focus_.Update();
     browser_.TickGameData();
     browser_.CaptureScreen();
     browser_.RenderAll();
     
-    if (pending_clear_chat_)
+    if (pending_clear_chat_.exchange(false, std::memory_order_acq_rel))
     {
-        pending_clear_chat_ = false;
-
         if (auto* chat = GetComponent<ChatComponent>())
             chat->Clear();
     }
@@ -312,6 +361,16 @@ void App::RemovePendingCreate(int id)
             [id](const PendingCreate& pending_create) { 
                 return pending_create.id == id; 
             }), pending_creates_.end());
+}
+
+void App::RemovePendingEmits(int browserId)
+{
+    std::lock_guard<std::mutex> lock(pending_emits_mutex_);
+    pending_emits_.erase(
+        std::remove_if(pending_emits_.begin(), pending_emits_.end(),
+            [browserId](const PendingEmit& pending_emit) {
+                return pending_emit.browserId == browserId;
+            }), pending_emits_.end());
 }
 
 void App::QueueOrCreateOverlay(int id, const std::string& url, bool focused, bool controls_chat, float width, float height)
@@ -471,6 +530,7 @@ void App::OnPacketReceived(const NetworkPacket& packet)
                 const int id = event.args[0].intValue;
 
                 RemovePendingCreate(id);
+                RemovePendingEmits(id);
 
                 browser_.DestroyBrowser(id);
             }
@@ -553,7 +613,7 @@ void App::OnPacketReceived(const NetworkPacket& packet)
             }
             else if (event.name == CefEvent::Server::ClearChat)
             {
-                pending_clear_chat_ = true;
+                pending_clear_chat_.store(true, std::memory_order_release);
             }
             else if (event.name == CefEvent::Server::ToggleChatInput && event.args.size() >= 1)
             {
@@ -611,7 +671,11 @@ void App::OnPacketReceived(const NetworkPacket& packet)
                 pending_emit.browserId = browserId;
                 pending_emit.eventName = eventName;
                 pending_emit.args = event.args;
-                pending_emits_.push_back(std::move(pending_emit));
+
+                {
+                    std::lock_guard<std::mutex> lock(pending_emits_mutex_);
+                    pending_emits_.push_back(std::move(pending_emit));
+                }
 
                 LOG_INFO("[CEF] EmitEvent '{}' queued for browser {} (not created yet).", eventName.c_str(), browserId);
             }

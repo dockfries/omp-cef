@@ -3,6 +3,8 @@
 #include "shared/packet.hpp"
 #include "network/network_manager.hpp"
 
+#include <atomic>
+#include <optional>
 #include <string>
 #include <mutex>
 #include <vector>
@@ -24,7 +26,9 @@ public:
 
         bool focused = false;
         bool controls_chat = false;
-        int layer = 0;
+        // nullopt = the server never asked for a layer for this browser; 0 is a
+        // legitimate requested layer and must not be confused with "unset".
+        std::optional<int> layer;
         float width = -1.f;
         float height = -1.f;
 
@@ -71,6 +75,7 @@ private:
     void FlushPendingIfReady();
     
     void RemovePendingCreate(int id);
+    void RemovePendingEmits(int browserId);
     void QueueOrCreateOverlay(int id, const std::string& url, bool focused, bool controls_chat, float width, float height);
     void QueueOrCreateWorld(int id, const std::string& url, const std::string& textureName, float width, float height);
     void QueueOrCreateWorld2D(int id, const std::string& url, float worldX, float worldY, float worldZ, float width, float height, float offsetZ, float pivotX, float pivotY);
@@ -98,7 +103,9 @@ private:
     bool flushed_once_ = false;
     std::mutex pending_creates_mutex_;
     std::vector<PendingCreate> pending_creates_;
+    // Written by the network thread, drained by the main thread in FlushPendingIfReady().
+    std::mutex pending_emits_mutex_;
     std::vector<PendingEmit> pending_emits_;
 
-    bool pending_clear_chat_ = false;
+    std::atomic<bool> pending_clear_chat_{ false };
 };

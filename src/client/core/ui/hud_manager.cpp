@@ -18,9 +18,43 @@ void HudManager::Initialize()
 
 void HudManager::ToggleComponent(EHudComponent component, bool toggle)
 {
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    pending_toggles_.emplace_back(component, toggle);
+}
+
+void HudManager::SetClassSelectionVisible(bool visible)
+{
+    std::lock_guard<std::mutex> lock(queue_mutex_);
+    pending_class_selection_ = visible;
+}
+
+void HudManager::Pump()
+{
+    std::vector<std::pair<EHudComponent, bool>> toggles;
+    std::optional<bool> class_selection;
+
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        toggles.swap(pending_toggles_);
+        class_selection.swap(pending_class_selection_);
+    }
+
+    for (const auto& [component, toggle] : toggles)
+    {
+        ApplyToggle(component, toggle);
+    }
+
+    if (class_selection.has_value())
+    {
+        ApplyClassSelectionVisible(*class_selection);
+    }
+}
+
+void HudManager::ApplyToggle(EHudComponent component, bool toggle)
+{
     if (component == EHudComponent::ALL) {
         for (const auto& kv : patches_) {
-            ToggleComponent(kv.first, toggle);
+            ApplyToggle(kv.first, toggle);
         }
 
         return;
@@ -47,7 +81,7 @@ void HudManager::ToggleComponent(EHudComponent component, bool toggle)
     }
 }
 
-void HudManager::SetClassSelectionVisible(bool visible)
+void HudManager::ApplyClassSelectionVisible(bool visible)
 {
     const auto version = SampAddresses::Instance().Version();
     const auto base = SampAddresses::Instance().Base();

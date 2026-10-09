@@ -1092,6 +1092,12 @@ void BrowserManager::SetDevToolsEnabled(int browserId, bool enabled)
 
 void BrowserManager::AttachBrowserToObject(int browserId, int objectId)
 {
+    if (!CefCurrentlyOn(TID_UI))
+    {
+        CefPostTask(TID_UI, base::BindOnce(&BrowserManager::AttachBrowserToObject, base::Unretained(this), browserId, objectId));
+        return;
+    }
+
     if (!browsers_.count(browserId))
     {
         LOG_WARN("[CEF] AttachBrowserToObject: Browser ID {} does not exist.", browserId);
@@ -1113,6 +1119,12 @@ void BrowserManager::AttachBrowserToObject(int browserId, int objectId)
 
 void BrowserManager::DetachBrowserFromObject(int browserId, int objectId)
 {
+    if (!CefCurrentlyOn(TID_UI))
+    {
+        CefPostTask(TID_UI, base::BindOnce(&BrowserManager::DetachBrowserFromObject, base::Unretained(this), browserId, objectId));
+        return;
+    }
+
     CEntity* nativeEntity = GetEntityFromObjectId(objectId);
     if (nativeEntity)
     {
@@ -1754,9 +1766,13 @@ void BrowserManager::UpdateAudioSpatialization()
 
 void BrowserManager::SetKeyCaptureEnabled(bool enabled)
 {
-    key_capture_enabled_ = enabled;
-
-    LOG_INFO("[CEF] KeyCapture {}", enabled ? "enabled" : "disabled");
+    // The state below is read by the WndProc hook on the game thread, so apply
+    // the change there instead of writing it from the packet thread.
+    gta_.PostToMainThread([this, enabled]()
+    {
+        key_capture_enabled_ = enabled;
+        LOG_INFO("[CEF] KeyCapture {}", enabled ? "enabled" : "disabled");
+    });
 }
 
 void BrowserManager::EnableKey(int key, bool enabled)
@@ -1764,9 +1780,12 @@ void BrowserManager::EnableKey(int key, bool enabled)
     if (key < 0 || key > 255)
         return;
 
-    key_allowed_.set(static_cast<size_t>(key), enabled);
-
-    LOG_INFO("[CEF] Key {} {}", key, enabled ? "enabled" : "disabled");
+    // See SetKeyCaptureEnabled: key_allowed_ is read on the game thread.
+    gta_.PostToMainThread([this, key, enabled]()
+    {
+        key_allowed_.set(static_cast<size_t>(key), enabled);
+        LOG_INFO("[CEF] Key {} {}", key, enabled ? "enabled" : "disabled");
+    });
 }
 
 void BrowserManager::OnGameFocusGained()
