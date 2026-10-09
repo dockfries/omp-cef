@@ -1,5 +1,7 @@
 ﻿#include "plugin.hpp"
 
+#include <unordered_set>
+
 #include <shared/crypto.hpp>
 
 #include "cef_event_handlers.hpp"
@@ -38,12 +40,14 @@ void CefPlugin::Initialize(std::unique_ptr<IPlatformBridge> bridge, uint16_t lis
 	logger_.SetLevel(options.log_level);
 	logging::SetLogger(&logger_);
 
-	security_->Initialize(io_context_);
-
     const uint16_t port = (listen_port != 0 ? listen_port : DefaultListenPort);
 
 	try
 	{
+		// Inside the try: this throws on libsodium init failure, and letting it
+		// escape Initialize() would cross the C ABI of Load().
+		security_->Initialize(io_context_);
+
 		network_server_ = std::make_unique<NetworkServer>(
 			port,
 			io_context_,
@@ -77,11 +81,23 @@ void CefPlugin::Initialize(std::unique_ptr<IPlatformBridge> bridge, uint16_t lis
 	}
 	catch (const std::exception& e)
 	{
+		// Log before detaching the logger: with a null logger the LOG_* macros are
+		// no-ops, so the original ordering swallowed this error entirely.
+		LOG_ERROR("Failed to start Network Server: %s", e.what());
+
 		network_server_.reset();
+
+		if (security_)
+		{
+			// Release this io-owning object while io_context_ is still alive: it is
+			// declared before io_context_ and would otherwise be destroyed after it.
+			// running_ stays false, so Shutdown() will not do it later.
+			security_->Shutdown();
+			security_.reset();
+		}
+
 		logging::SetLogger(nullptr);
 		bridge_.reset();
-
-		LOG_ERROR("Failed to start Network Server: %s", e.what());
 	}
 }
 
@@ -222,6 +238,14 @@ bool CefPlugin::OnDialogResponse(int playerid, int dialogid)
 void CefPlugin::SetSpawnScreenState(int playerid, bool visible)
 {
     player_ui_states_[playerid].spawnScreenVisible = visible;
+}
+
+// The Pawn component is about to be freed: drop every raw Pawn pointer we hold,
+// otherwise a later callback would run against freed memory.
+void CefPlugin::InvalidatePawnBridge()
+{
+	if (bridge_)
+		bridge_->InvalidatePawn();
 }
 
 void CefPlugin::OnPacketReceived(const asio::ip::udp::endpoint& from, const char* data, int len)
@@ -570,7 +594,15 @@ void CefPlugin::HandleFileRequest(int playerid, const RequestFilesPacket& reques
 	std::vector<std::pair<std::string, size_t>> queuedFiles;
 	queuedFiles.reserve(request.files.size());
 
+	// A client can repeat the same entry in one packet; queue every file only once,
+	// otherwise each duplicate re-reads the whole .pak from disk and adds another
+	// full copy to the session's queue.
+	std::unordered_set<std::string> seen;
+
 	for (const auto& [resourceName, relativePath] : request.files) {
+		if (!seen.insert(resourceName + "/" + relativePath).second)
+			continue;
+
 		if (resource_->IsFileValid(resourceName, relativePath)) {
 
 			std::vector<uint8_t> content;

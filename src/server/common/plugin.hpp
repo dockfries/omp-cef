@@ -56,6 +56,7 @@ public:
 	void OnPlayerDisconnect(int playerid);
 	bool OnDialogResponse(int playerid, int dialogid);
 	void SetSpawnScreenState(int playerid, bool visible);
+	void InvalidatePawnBridge();
 
 	void OnPacketReceived(const asio::ip::udp::endpoint& from, const char* data, int len);
 

@@ -91,6 +91,13 @@ void CefOmpComponent::onFree(IComponent* component)
 {
     if (component == pawn_)
     {
+        // The bridge keeps its own raw Pawn pointer; invalidate it before the
+        // component goes away, or the next callback is a use-after-free.
+        if (plugin_)
+        {
+            plugin_->InvalidatePawnBridge();
+        }
+
         pawn_ = nullptr;
     }
 }

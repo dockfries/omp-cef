@@ -80,11 +80,24 @@ void OmpPlatformBridge::CallPawnPublic(const std::string& name, const std::vecto
         script->Release(heap_before_push);
     };
 
-    call_on_script(pawn_->mainScript());
+    // Snapshot the component for the duration of the dispatch: any callback below
+    // can free the Pawn component (onFree nulls pawn_, and its scripts with it),
+    // so pawn_->sideScripts() after a callback would dereference null.
+    IPawnComponent* const pawn = pawn_;
+    if (!pawn)
+        return;
 
-    for (IPawnScript* script : pawn_->sideScripts())
+    call_on_script(pawn->mainScript());
+
+    if (pawn_ != pawn)
+        return;
+
+    for (IPawnScript* script : pawn->sideScripts())
     {
         call_on_script(script);
+
+        if (pawn_ != pawn)
+            return;
     }
 }
 
@@ -100,9 +113,22 @@ void OmpPlatformBridge::CallOnBrowserCreated(int playerid, int browserId, bool s
         script->Call("OnCefBrowserCreated", DefaultReturnValue_False, playerid, browserId, success, code, StringView(reason));
     };
 
-    call(pawn_->mainScript());
-    for (IPawnScript* script : pawn_->sideScripts()) {
+    // See CallPawnPublic: a callback can free the Pawn component, so work from a
+    // snapshot and stop as soon as it is gone.
+    IPawnComponent* const pawn = pawn_;
+    if (!pawn)
+        return;
+
+    call(pawn->mainScript());
+
+    if (pawn_ != pawn)
+        return;
+
+    for (IPawnScript* script : pawn->sideScripts()) {
         call(script);
+
+        if (pawn_ != pawn)
+            return;
     }
 }
 
@@ -118,9 +144,21 @@ void OmpPlatformBridge::CallOnDownloadStart(int playerid)
         script->Call("OnCefDownloadStart", DefaultReturnValue_True, playerid);
     };
 
-    call(pawn_->mainScript());
-    for (IPawnScript* script : pawn_->sideScripts()) {
+    // See CallPawnPublic: a callback can free the Pawn component.
+    IPawnComponent* const pawn = pawn_;
+    if (!pawn)
+        return;
+
+    call(pawn->mainScript());
+
+    if (pawn_ != pawn)
+        return;
+
+    for (IPawnScript* script : pawn->sideScripts()) {
         call(script);
+
+        if (pawn_ != pawn)
+            return;
     }
 }
 
@@ -154,9 +192,21 @@ void OmpPlatformBridge::CallOnDownloadProgress(
             totalKb);
     };
 
-    call(pawn_->mainScript());
-    for (IPawnScript* script : pawn_->sideScripts()) {
+    // See CallPawnPublic: a callback can free the Pawn component.
+    IPawnComponent* const pawn = pawn_;
+    if (!pawn)
+        return;
+
+    call(pawn->mainScript());
+
+    if (pawn_ != pawn)
+        return;
+
+    for (IPawnScript* script : pawn->sideScripts()) {
         call(script);
+
+        if (pawn_ != pawn)
+            return;
     }
 }
 
@@ -172,9 +222,21 @@ void OmpPlatformBridge::CallOnDownloadFinish(int playerid)
         script->Call("OnCefDownloadFinish", DefaultReturnValue_True, playerid);
     };
 
-    call(pawn_->mainScript());
-    for (IPawnScript* script : pawn_->sideScripts()) {
+    // See CallPawnPublic: a callback can free the Pawn component.
+    IPawnComponent* const pawn = pawn_;
+    if (!pawn)
+        return;
+
+    call(pawn->mainScript());
+
+    if (pawn_ != pawn)
+        return;
+
+    for (IPawnScript* script : pawn->sideScripts()) {
         call(script);
+
+        if (pawn_ != pawn)
+            return;
     }
 }
 
@@ -190,9 +252,21 @@ void OmpPlatformBridge::CallOnPressKey(int playerid, int key, int scancode, int 
         script->Call("OnCefPressKey", DefaultReturnValue_True, playerid, key, scancode, modifiers, down, repeat);
     };
 
-    call(pawn_->mainScript());
-    for (IPawnScript* script : pawn_->sideScripts()) {
+    // See CallPawnPublic: a callback can free the Pawn component.
+    IPawnComponent* const pawn = pawn_;
+    if (!pawn)
+        return;
+
+    call(pawn->mainScript());
+
+    if (pawn_ != pawn)
+        return;
+
+    for (IPawnScript* script : pawn->sideScripts()) {
         call(script);
+
+        if (pawn_ != pawn)
+            return;
     }
 }
 
@@ -283,4 +357,9 @@ bool OmpPlatformBridge::IsPlayerNpcBot(int playerid)
         return false;
 
     return player->isBot();
+}
+
+void OmpPlatformBridge::InvalidatePawn()
+{
+	pawn_ = nullptr;
 }

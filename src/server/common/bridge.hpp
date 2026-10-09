@@ -40,4 +40,9 @@ public:
     virtual std::string GetPlayerAddressIp(int playerid) = 0;
     virtual void KickPlayer(int playerid) = 0;
     virtual bool IsPlayerNpcBot(int playerid) = 0;
+
+    // Called on the server thread before the Pawn component is released, so a
+    // bridge holding a raw Pawn pointer can drop it before it dangles.
+    // Bridges without a separately owned Pawn runtime need no action.
+    virtual void InvalidatePawn() {}
 };

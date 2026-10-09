@@ -43,7 +43,7 @@ private:
 
 private:
     ICore* core_ = nullptr;
-    IPawnComponent* pawn_;
+    IPawnComponent* pawn_ = nullptr;
 
     std::unique_ptr<CefPlugin> plugin_;
 
