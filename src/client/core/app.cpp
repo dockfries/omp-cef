@@ -372,6 +372,21 @@ void App::Tick()
     }
 }
 
+void App::FailPendingCreates(const char* reason)
+{
+    std::vector<PendingCreate> creates;
+    {
+        std::lock_guard<std::mutex> lock(pending_creates_mutex_);
+        creates.swap(pending_creates_);
+    }
+
+    for (const auto& crate : creates)
+    {
+        LOG_ERROR("[CEF] Browser {} will not be created: {}", crate.id, reason);
+        network_.SendBrowserCreateResult(crate.id, false, static_cast<int>(BrowserCreateStatus::Error_Generic), reason);
+    }
+}
+
 void App::RemovePendingCreate(int id)
 {
     std::lock_guard<std::mutex> lock(pending_creates_mutex_);
@@ -469,6 +484,7 @@ void App::OnPacketReceived(const NetworkPacket& packet)
         case PacketType::ServerConfig:
         {
             const auto& cfg = std::get<ServerConfigPacket>(packet.payload);
+            const auto& master_key = cfg.master_resource_key;             if (master_key.size() != 16 && master_key.size() != 24 && master_key.size() != 32)             {                 LOG_ERROR("[CEF] Server master resource key is {} bytes (expected 16, 24 or 32) - resources cannot be decoded.", master_key.size());                 FailPendingCreates("invalid master resource key length");                 break;             } 
             resources_.SetMasterKey(cfg.master_resource_key);
             resources_.SetResourcesLoaderUiEnabled(cfg.resources_loader_ui);
             resources_.MarkAsReadyToDownload();
