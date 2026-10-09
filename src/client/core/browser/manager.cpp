@@ -33,6 +33,7 @@ static void ConfigureBrowserSettings(CefBrowserSettings& settings)
     settings.remote_fonts = STATE_ENABLED;
     settings.webgl = STATE_ENABLED;
     settings.tab_to_links = STATE_DISABLED;
+    settings.javascript_close_windows = STATE_ENABLED;
 }
 
 static uint32_t GetCefEventFlags()
@@ -233,7 +234,8 @@ namespace
         void Execute() override
         {
             fn_();
-            done_->set_value();
+            if (done_)
+                done_->set_value();
         }
 
     private:
@@ -616,6 +618,7 @@ void BrowserManager::BeginShutdownOnUi()
             else
             {
                 // Nothing was ever created for this entry, so no OnBeforeClose will arrive.
+                ReleaseOnMainThread(std::move(it->second));
                 it = browsers_.erase(it);
             }
         }
@@ -643,56 +646,14 @@ void BrowserManager::Shutdown()
     screen_capture_.StopAll();
     screen_capture_.OnDeviceLost();
 
-    {
-        std::lock_guard<std::mutex> lock(shutdown_mutex_);
-        shutdown_sweep_done_ = false;
-    }
+    // The CEF threads stop before the client is told to shut down (the game window is never closed
+    // with WM_CLOSE/WM_DESTROY, and the task queue accepts work it will never run), so CefShutdown()
+    // cannot be called: it must not run while a browser is alive, and leaked CEF state costs nothing
+    // in a process that is exiting anyway. Ask once and go.
+    const bool posted = !CefCurrentlyOn(TID_UI) &&
+        CefPostTask(TID_UI, new UiTask([this]() { BeginShutdownOnUi(); }, nullptr));
 
-    if (CefCurrentlyOn(TID_UI))
-    {
-        // The manager is owned by the runtime thread, so this is not expected. We must not
-        // block the thread that has to deliver OnBeforeClose, so only ask and give up.
-        BeginShutdownOnUi();
-        LOG_ERROR("[CEF] Shutdown() ran on the CEF UI thread - skipping CefShutdown().");
-        initialized_ = false;
-        return;
-    }
-
-    constexpr int kUiRequestTimeoutMs = 2000;
-    constexpr int kCloseTimeoutSec = 5;
-
-    // Phase 1: the UI thread closes every browser and reports what it is waiting for.
-    const bool requested = PostToUiAndWait([this]() { BeginShutdownOnUi(); }, kUiRequestTimeoutMs);
-    if (!requested)
-        LOG_ERROR("[CEF] The CEF UI thread did not run the shutdown task within {} ms.", kUiRequestTimeoutMs);
-
-    // Phase 2: wait on this thread for the last OnBeforeClose. This has to happen outside
-    // of any UI task, otherwise the callback we are waiting for could never run.
-    bool closed = false;
-    if (requested)
-    {
-        std::unique_lock<std::mutex> lock(shutdown_mutex_);
-        closed = shutdown_cv_.wait_for(lock, std::chrono::seconds(kCloseTimeoutSec), [this]() {
-            return shutdown_sweep_done_ && outstanding_close_ids_.empty();
-        });
-    }
-
-    if (closed)
-    {
-        CefShutdown();
-        LOG_INFO("CEF Browser manager shut down successfully.");
-    }
-    else
-    {
-        // CefShutdown() must not run while a browser is still alive, so prefer leaking CEF
-        // state over crashing on exit - the process is going away anyway.
-        LOG_ERROR("[CEF] Browsers did not close within {} s - skipping CefShutdown().", kCloseTimeoutSec);
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(shutdown_mutex_);
-        shutdown_sweep_done_ = false;
-    }
+    LOG_INFO("[CEF] Skipping CefShutdown() - the CEF threads are already gone (posted={}).", posted);
 
     initialized_ = false;
 }
@@ -798,7 +759,7 @@ void BrowserManager::CreateBrowserInternal(
         return;
     }
 
-    auto instance = std::make_unique<BrowserInstance>(id);
+    auto instance = std::make_shared<BrowserInstance>(id);
     instance->mode = RenderMode::Overlay2D;
     instance->url = url;
     instance->client = BrowserClient::Create(id, *this, audio_, focus_, network_);
@@ -892,7 +853,7 @@ void BrowserManager::CreateWorldBrowserInternal(
         return;
     }
 
-    auto instance = std::make_unique<BrowserInstance>(id);
+    auto instance = std::make_shared<BrowserInstance>(id);
     instance->mode = RenderMode::WorldObject3D;
     instance->url = url;
     instance->textureName = textureName;
@@ -909,7 +870,7 @@ void BrowserManager::CreateWorldBrowserInternal(
         auto* device = RenderManager::Instance().GetDevice();
         if (!device) return;
 
-        worldRenderers_[id] = std::make_unique<WorldRenderer>(textureName, (float)browser_width, (float)browser_height);
+        worldRenderers_[id] = std::make_shared<WorldRenderer>(textureName, (float)browser_width, (float)browser_height);
         inst->view.Initialize(device);
         inst->view.Create(browser_width, browser_height);
     });
@@ -963,7 +924,7 @@ void BrowserManager::CreateWorld2DBrowserInternal(
         return;
     }
 
-    auto instance = std::make_unique<BrowserInstance>(id);
+    auto instance = std::make_shared<BrowserInstance>(id);
     instance->mode = RenderMode::World2D;
     instance->url = url;
     instance->client = BrowserClient::Create(id, *this, audio_, focus_, network_);
@@ -1106,37 +1067,15 @@ void BrowserManager::DestroyBrowser(int id)
     if (it == browsers_.end())
         return;
 
-    auto& instance = it->second;
+    // Keep a local reference: closing the browser below can synchronously run
+    // OnBeforeClose -> OnBrowserClosed, which erases this entry, so the iterator and
+    // anything reachable only through it must not be used after that point.
+    std::shared_ptr<BrowserInstance> instance = it->second;
 
     if (focusedBrowserId_ == id)
         FocusBrowser(id, false);
 
-    if (instance->browser && instance->browser->GetHost())
-        instance->browser->GetHost()->CloseDevTools();
-
-    instance->devtools_requested = false;
-
-    if (instance->devtools_browser && instance->devtools_browser->GetHost())
-        instance->devtools_browser->GetHost()->CloseBrowser(true);
-
-    instance->devtools_open = false;
-    instance->devtools_browser = nullptr;
-    instance->devtools_client = nullptr;
-
-    for (auto eit = entityToBrowserId_.begin(); eit != entityToBrowserId_.end();)
-    {
-        if (eit->second == id)
-        {
-            OnAfterEntityRender(eit->first);
-            eit = entityToBrowserId_.erase(eit);
-        }
-        else
-        {
-            ++eit;
-        }
-    }
-
-    worldRenderers_.erase(id);
+    ReleaseBrowserResources(id, *instance);
 
     if (instance->browser && instance->browser->GetHost())
     {
@@ -1154,8 +1093,77 @@ void BrowserManager::DestroyBrowser(int id)
         instance->browser = nullptr;
     }
 
-    browsers_.erase(it);
+    // The entry may already be gone (a synchronous close ran OnBrowserClosed). Remove it only
+    // while it is still the same instance, and release whichever reference we hold last on the
+    // render thread.
+    auto it2 = browsers_.find(id);
+    if (it2 != browsers_.end() && it2->second == instance)
+    {
+        ReleaseOnMainThread(std::move(it2->second));
+        browsers_.erase(it2);
+    }
+    else
+    {
+        ReleaseOnMainThread(std::move(instance));
+    }
+
     LOG_DEBUG("[CEF] Browser ID {} destroyed and removed from map.", id);
+}
+
+void BrowserManager::ReleaseOnMainThread(std::shared_ptr<void> resource)
+{
+    if (!resource)
+        return;
+
+    // The task below is what destroys the object: the main-thread queue holds the last
+    // reference until it has run the task and released it, so the D3D texture is freed on
+    // the render thread instead of the CEF UI thread.
+    gta_.PostToMainThread([resource]() mutable { resource.reset(); });
+}
+
+void BrowserManager::ReleaseBrowserResources(int id, BrowserInstance& instance)
+{
+    if (instance.browser && instance.browser->GetHost())
+        instance.browser->GetHost()->CloseDevTools();
+
+    instance.devtools_requested = false;
+
+    if (instance.devtools_browser && instance.devtools_browser->GetHost())
+        instance.devtools_browser->GetHost()->CloseBrowser(true);
+
+    instance.devtools_open = false;
+    instance.devtools_browser = nullptr;
+    instance.devtools_client = nullptr;
+
+    CancelDrag(id);
+    screen_capture_.Stop(id);
+
+    std::shared_ptr<WorldRenderer> renderer;
+    auto wrIt = worldRenderers_.find(id);
+    if (wrIt != worldRenderers_.end())
+        renderer = wrIt->second;
+
+    if (renderer)
+        gta_.PostToMainThread([renderer]() { renderer->RestoreTexture(); });
+
+    for (auto eit = entityToBrowserId_.begin(); eit != entityToBrowserId_.end();)
+    {
+        if (eit->second == id)
+        {
+            eit = entityToBrowserId_.erase(eit);
+        }
+        else
+        {
+            ++eit;
+        }
+    }
+
+    wrIt = worldRenderers_.find(id);
+    if (wrIt != worldRenderers_.end())
+    {
+        ReleaseOnMainThread(std::move(wrIt->second));
+        worldRenderers_.erase(wrIt);
+    }
 }
 
 void BrowserManager::DestroyAllBrowsers()
@@ -1284,17 +1292,45 @@ void BrowserManager::AttachBrowserToObject(int browserId, int objectId)
         LOG_WARN("[CEF] AttachBrowserToObject: Browser ID {} does not exist.", browserId);
         return;
     }
-    CEntity* nativeEntity = GetEntityFromObjectId(objectId);
-    if (nativeEntity)
+
+    if (CEntity* nativeEntity = GetEntityFromObjectId(objectId))
     {
         entityToBrowserId_[nativeEntity] = browserId;
         audio_.SetStreamMuted(browserId, false); // unmute when attached
 
         LOG_DEBUG("[CEF] Browser {} attached to object {} (Entity: {})", browserId, objectId, (const void*)nativeEntity);
+        return;
     }
-    else
+
+    // The object arrives over the game connection while this command arrives over the CEF socket,
+    // so the object can still be missing here. Keep the request until it exists.
+    pending_attaches_.emplace_back(browserId, objectId);
+}
+
+void BrowserManager::ProcessPendingAttaches()
+{
+    for (auto it = pending_attaches_.begin(); it != pending_attaches_.end();)
     {
-        LOG_WARN("[CEF] AttachBrowserToObject: Could not find entity for object ID {}.", objectId);
+        const int browserId = it->first;
+        const int objectId = it->second;
+
+        if (!browsers_.count(browserId))
+        {
+            it = pending_attaches_.erase(it);
+            continue;
+        }
+
+        if (CEntity* nativeEntity = GetEntityFromObjectId(objectId))
+        {
+            entityToBrowserId_[nativeEntity] = browserId;
+            audio_.SetStreamMuted(browserId, false); // unmute when attached
+
+            LOG_DEBUG("[CEF] Browser {} attached to object {} (Entity: {})", browserId, objectId, (const void*)nativeEntity);
+            it = pending_attaches_.erase(it);
+            continue;
+        }
+
+        ++it;
     }
 }
 
@@ -1312,7 +1348,16 @@ void BrowserManager::DetachBrowserFromObject(int browserId, int objectId)
         auto it = entityToBrowserId_.find(nativeEntity);
         if (it != entityToBrowserId_.end() && it->second == browserId)
         {
-            OnAfterEntityRender(nativeEntity); // ensure texture restored
+            // Restore the swapped texture on the render thread: RestoreTexture() writes
+            // RenderWare material pointers, which must not happen while the game thread is
+            // rendering this very entity.
+            auto wrIt = worldRenderers_.find(browserId);
+            if (wrIt != worldRenderers_.end() && wrIt->second)
+            {
+                std::shared_ptr<WorldRenderer> renderer = wrIt->second;
+                gta_.PostToMainThread([renderer]() { renderer->RestoreTexture(); });
+            }
+
             entityToBrowserId_.erase(it);
             audio_.SetStreamMuted(browserId, true); // mute when detached
             LOG_DEBUG("[CEF] Browser {} detached from object {} (Entity: {})",
@@ -1411,10 +1456,22 @@ void BrowserManager::OnBrowserClosed(int id, CefRefPtr<CefBrowser> browser)
         return;
     }
 
+    LOG_DEBUG("[CEF] Browser {} closed.", id);
+
     player_stats_poll_.erase(id);
-    screen_capture_.Stop(id);
     pending_.erase(id);
-    browsers_.erase(id);
+
+    // A browser CEF closes by itself (window.close()) has to release the same resources as the
+    // destroy path, otherwise a world browser keeps its swapped texture and entity mapping.
+    if (it != browsers_.end() && it->second)
+        ReleaseBrowserResources(id, *it->second);
+
+    // The instance owns the D3D texture of this browser, so hand it to the render thread.
+    if (it != browsers_.end())
+    {
+        ReleaseOnMainThread(std::move(it->second));
+        browsers_.erase(it);
+    }
 }
 
 void BrowserManager::StartScreenCapture(int browserId, int width, int height, int fps)
@@ -1599,6 +1656,8 @@ void BrowserManager::OnPaint(int id, const void* buffer, int width, int height, 
 {
     if (is_shutting_down_ || isCefUpdatesPaused_ || !buffer || width <= 0 || height <= 0)
         return;
+
+    ProcessPendingAttaches();
 
     auto* instance = GetBrowserInstance(id);
     if (!instance)

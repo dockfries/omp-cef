@@ -12,7 +12,7 @@ bool WndProcHook::Initialize()
 
     ::SetLastError(0);
     auto prev = reinterpret_cast<WNDPROC>(
-        ::SetWindowLongPtrW(hwnd_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&StaticWndProc))
+        ::SetWindowLongPtrA(hwnd_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&StaticWndProc))
     );
 
     DWORD err = ::GetLastError();
@@ -40,7 +40,7 @@ void WndProcHook::EnsureInstalled()
 
     lastEnsureTick_ = now;
 
-    const auto current = reinterpret_cast<WNDPROC>(::GetWindowLongPtrW(hwnd_, GWLP_WNDPROC));
+    const auto current = reinterpret_cast<WNDPROC>(::GetWindowLongPtrA(hwnd_, GWLP_WNDPROC));
     if (!current)
         return;
 
@@ -50,7 +50,7 @@ void WndProcHook::EnsureInstalled()
     nextProc_ = current;
 
     ::SetLastError(0);
-    ::SetWindowLongPtrW(hwnd_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&StaticWndProc));
+    ::SetWindowLongPtrA(hwnd_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&StaticWndProc));
 
     if (::GetLastError() == 0) {
         LOG_DEBUG("[WndProcHook] Hook reinstalled (nextProc={})", static_cast<void*>(nextProc_));
@@ -62,13 +62,13 @@ void WndProcHook::Shutdown()
     if (!hwnd_)
         return;
 
-    const auto current = reinterpret_cast<WNDPROC>(::GetWindowLongPtrW(hwnd_, GWLP_WNDPROC));
+    const auto current = reinterpret_cast<WNDPROC>(::GetWindowLongPtrA(hwnd_, GWLP_WNDPROC));
 
     if (current == reinterpret_cast<WNDPROC>(&StaticWndProc))
     {
         auto restore = nextProc_ ? nextProc_ : baseProc_;
         if (restore && ::IsWindow(hwnd_))
-            ::SetWindowLongPtrW(hwnd_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(restore));
+            ::SetWindowLongPtrA(hwnd_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(restore));
     }
 
     hwnd_ = nullptr;
@@ -100,8 +100,8 @@ LRESULT CALLBACK WndProcHook::StaticWndProc(HWND hwnd, UINT msg, WPARAM wParam, 
     if (self)
         target = reentered ? self->baseProc_ : self->nextProc_;
 
-    const LRESULT out = ::CallWindowProcW(
-        target ? target : ::DefWindowProcW, hwnd, msg, wParam, lParam);
+    const LRESULT out = ::CallWindowProcA(
+        target ? target : ::DefWindowProcA, hwnd, msg, wParam, lParam);
 
     depth--;
     return out;

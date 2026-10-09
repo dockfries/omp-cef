@@ -151,6 +151,9 @@ public:
     // 3D World interaction
     void AttachBrowserToObject(int browserId, int objectId);
     void DetachBrowserFromObject(int browserId, int objectId);
+    // Internal: attaches on the next frames while the object has not materialized yet.
+    // Always runs on the CEF UI thread.
+    void ProcessPendingAttaches();
     void OnBeforeEntityRender(CEntity* entity);
     void OnAfterEntityRender(CEntity* entity);
     void UpdateAudioSpatialization();
@@ -198,7 +201,7 @@ public:
 
     BrowserInstance* GetBrowserInstance(int id);
     BrowserInstance* GetFocusedBrowser();
-    const std::unordered_map<int, std::unique_ptr<BrowserInstance>>& GetAllBrowsers() const
+    const std::unordered_map<int, std::shared_ptr<BrowserInstance>>& GetAllBrowsers() const
     {
         return browsers_;
     }
@@ -286,9 +289,19 @@ private:
     // The single source for which browser has focus. -1 means none.
     int focusedBrowserId_ = -1;
 
-    std::unordered_map<int, std::unique_ptr<BrowserInstance>> browsers_;
-    std::unordered_map<int, std::unique_ptr<WorldRenderer>> worldRenderers_;
+    // Shared ownership: the CEF UI thread removes entries from the maps, but the objects own
+    // D3D/RenderWare resources and must be destroyed on the game (render) thread, so the
+    // entries are handed over instead of being destroyed in place - see ReleaseOnMainThread.
+    std::unordered_map<int, std::shared_ptr<BrowserInstance>> browsers_;
+    std::unordered_map<int, std::shared_ptr<WorldRenderer>> worldRenderers_;
     std::unordered_map<CEntity*, int> entityToBrowserId_;
+    std::vector<std::pair<int, int>> pending_attaches_;
+
+    // Drops the last reference to a D3D owning object inside a main-thread task, so the
+    // texture is released on the render thread. The game's D3D device is not created with
+    // D3DCREATE_MULTITHREADED, so releasing textures from the CEF UI thread is UB.
+    void ReleaseOnMainThread(std::shared_ptr<void> resource);
+    void ReleaseBrowserResources(int id, BrowserInstance& instance);
 
     bool draw_enabled_ = true;
     cef_cursor_type_t cursor_type_ = CT_POINTER;
