@@ -702,10 +702,15 @@ void BrowserManager::CreateBrowser(
 {
     LOG_DEBUG("[CEF] CreateBrowser called with ID={}, url={}", id, url);
     
-    if (browsers_.count(id))
+    auto existing = browsers_.find(id);
+    if (existing != browsers_.end())
     {
-        LOG_ERROR("[CEF] CreateBrowser failed: Browser with ID {} already exists.", id);
-        LOG_ERROR("[CEF] Existing browser mode: {}", (int)browsers_[id]->mode);
+        const int existingMode = existing->second ? static_cast<int>(existing->second->mode) : -1;
+        LOG_ERROR("[CEF] CreateBrowser failed: Browser with ID {} already exists (mode {}).", id, existingMode);
+
+        // The server waits for a create result: without this its callback never fires.
+        network_.SendBrowserCreateResult(id, false,
+            static_cast<int>(BrowserCreateStatus::Error_IdAlreadyInUse), "Browser ID already in use");
         return;
     }
     CreateBrowserInternal(id, url, focused, controls_chat, width, height);
@@ -720,10 +725,15 @@ void BrowserManager::CreateWorldBrowser(
     if (normalized_url != url)
         LOG_DEBUG("[CEF] Normalized URL -> {}", normalized_url);
 
-    if (browsers_.count(id))
+    auto existing = browsers_.find(id);
+    if (existing != browsers_.end())
     {
-        LOG_ERROR("[CEF] CreateWorldBrowser failed: Browser with ID {} already exists.", id);
-        LOG_ERROR("[CEF] Existing browser mode: {}", (int)browsers_[id]->mode);
+        const int existingMode = existing->second ? static_cast<int>(existing->second->mode) : -1;
+        LOG_ERROR("[CEF] CreateWorldBrowser failed: Browser with ID {} already exists (mode {}).", id, existingMode);
+
+        // The server waits for a create result: without this its callback never fires.
+        network_.SendBrowserCreateResult(id, false,
+            static_cast<int>(BrowserCreateStatus::Error_IdAlreadyInUse), "Browser ID already in use");
         return;
     }
 
@@ -740,10 +750,15 @@ void BrowserManager::CreateWorld2DBrowser(
     if (normalized_url != url)
         LOG_DEBUG("[CEF] Normalized URL -> {}", normalized_url);
 
-    if (browsers_.count(id))
+    auto existing = browsers_.find(id);
+    if (existing != browsers_.end())
     {
-        LOG_ERROR("[CEF] CreateWorld2DBrowser failed: Browser with ID {} already exists.", id);
-        LOG_ERROR("[CEF] Existing browser mode: {}", (int)browsers_[id]->mode);
+        const int existingMode = existing->second ? static_cast<int>(existing->second->mode) : -1;
+        LOG_ERROR("[CEF] CreateWorld2DBrowser failed: Browser with ID {} already exists (mode {}).", id, existingMode);
+
+        // The server waits for a create result: without this its callback never fires.
+        network_.SendBrowserCreateResult(id, false,
+            static_cast<int>(BrowserCreateStatus::Error_IdAlreadyInUse), "Browser ID already in use");
         return;
     }
 
@@ -770,12 +785,16 @@ void BrowserManager::CreateBrowserInternal(
     if (is_shutting_down_)
     {
         LOG_WARN("[CEF] CreateBrowserInternal: ignored, the browser manager is shutting down.");
+        network_.SendBrowserCreateResult(id, false,
+            static_cast<int>(BrowserCreateStatus::Error_Generic), "The browser manager is shutting down");
         return;
     }
 
     if (browsers_.count(id))
     {
         LOG_ERROR("[CEF] CreateBrowserInternal: Browser with ID {} already exists (race condition?).", id);
+        network_.SendBrowserCreateResult(id, false,
+            static_cast<int>(BrowserCreateStatus::Error_IdAlreadyInUse), "Browser ID already in use");
         return;
     }
 
@@ -860,12 +879,16 @@ void BrowserManager::CreateWorldBrowserInternal(
     if (is_shutting_down_)
     {
         LOG_WARN("[CEF] CreateWorldBrowserInternal: ignored, the browser manager is shutting down.");
+        network_.SendBrowserCreateResult(id, false,
+            static_cast<int>(BrowserCreateStatus::Error_Generic), "The browser manager is shutting down");
         return;
     }
 
     if (browsers_.count(id))
     {
         LOG_ERROR("[CEF] CreateWorldBrowserInternal: Browser with ID {} already exists (race condition?).", id);
+        network_.SendBrowserCreateResult(id, false,
+            static_cast<int>(BrowserCreateStatus::Error_IdAlreadyInUse), "Browser ID already in use");
         return;
     }
 
@@ -927,12 +950,16 @@ void BrowserManager::CreateWorld2DBrowserInternal(
     if (is_shutting_down_)
     {
         LOG_WARN("[CEF] CreateWorld2DBrowserInternal: ignored, the browser manager is shutting down.");
+        network_.SendBrowserCreateResult(id, false,
+            static_cast<int>(BrowserCreateStatus::Error_Generic), "The browser manager is shutting down");
         return;
     }
 
     if (browsers_.count(id))
     {
         LOG_ERROR("[CEF] CreateWorld2DBrowserInternal: Browser with ID {} already exists (race condition?).", id);
+        network_.SendBrowserCreateResult(id, false,
+            static_cast<int>(BrowserCreateStatus::Error_IdAlreadyInUse), "Browser ID already in use");
         return;
     }
 
