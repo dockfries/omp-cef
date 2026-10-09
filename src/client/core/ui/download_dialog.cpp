@@ -81,7 +81,7 @@ void DownloadDialog::HideLoader()
 
     if (hud_ && (loader_visible_ || has_loader)) {
         hud_->ToggleComponent(EHudComponent::ALL, true);
-        // hud_->SetClassSelectionVisible(true);
+        hud_->SetClassSelectionVisible(true);
     }
 
     loader_visible_ = false;
