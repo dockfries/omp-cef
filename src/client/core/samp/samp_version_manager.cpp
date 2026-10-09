@@ -21,17 +21,50 @@ namespace
 
     SampVersion DetectByPeHeader(HMODULE module, DWORD& timestamp, DWORD& sizeOfImage)
     {
+        if (module == nullptr)
+            return SampVersion::Unknown;
+
         const auto* base = reinterpret_cast<const BYTE*>(module);
+
+        // The DOS/NT headers live in the first page of a real image. e_lfanew is a
+        // raw LONG from the file, so validate it before dereferencing anything:
+        // a truncated, hand-mapped or corrupt module would otherwise fault here.
+        constexpr SIZE_T MaxHeaderOffset = 0x1000;
+
         const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
         if (dos->e_magic != IMAGE_DOS_SIGNATURE)
             return SampVersion::Unknown;
 
-        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS32*>(base + dos->e_lfanew);
+        const LONG e_lfanew = dos->e_lfanew;
+        if (e_lfanew < static_cast<LONG>(sizeof(IMAGE_DOS_HEADER)) ||
+            static_cast<SIZE_T>(e_lfanew) + sizeof(IMAGE_NT_HEADERS32) > MaxHeaderOffset)
+        {
+            LOG_DEBUG("SA:MP PE header offset is out of range (e_lfanew=0x{:X}).", static_cast<unsigned>(e_lfanew));
+            return SampVersion::Unknown;
+        }
+
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS32*>(base + e_lfanew);
         if (nt->Signature != IMAGE_NT_SIGNATURE)
             return SampVersion::Unknown;
 
+        if (nt->FileHeader.SizeOfOptionalHeader < sizeof(IMAGE_OPTIONAL_HEADER32) ||
+            nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC)
+        {
+            LOG_DEBUG("SA:MP PE optional header is not a 32-bit PE header.");
+            return SampVersion::Unknown;
+        }
+
+        const DWORD imageSize = nt->OptionalHeader.SizeOfImage;
+        if (imageSize == 0)
+        {
+            // A loaded image always has a non-zero size, so zero means this is not
+            // a real mapped image header.
+            LOG_DEBUG("SA:MP PE SizeOfImage is zero.");
+            return SampVersion::Unknown;
+        }
+
         timestamp = nt->FileHeader.TimeDateStamp;
-        sizeOfImage = nt->OptionalHeader.SizeOfImage;
+        sizeOfImage = imageSize;
 
         for (const auto& build : kKnownSampBuilds)
         {
@@ -45,12 +78,37 @@ namespace
 
 bool SampVersionManager::Initialize()
 {
+    // samp.dll is loaded by the SA-MP client and the ASI can be injected before
+    // it appears, so keep waiting - but never silently: without a log line this
+    // state is indistinguishable from the plugin not being installed at all.
+    // The ASI also loads in single player, where samp.dll never appears, so the
+    // logging backs off after the first minute instead of repeating forever.
+    constexpr int kPollIntervalMs = 100;
+    constexpr long long kFastLogPolls = 50;   // every 5 s for the first minute
+    constexpr long long kSlowLogPolls = 600;  // every 60 s afterwards
+    constexpr long long kFastLogUntil = 600;
+
+    // 64-bit counter: this loop has no upper bound, so an int would overflow
+    // (signed overflow is UB) if the wait ever ran for years.
+    long long polls = 0;
+
     while ((_sampModule = ::GetModuleHandleA("samp.dll")) == nullptr)
-        ::Sleep(100);
+    {
+        const long long logEveryNPolls = (polls < kFastLogUntil) ? kFastLogPolls : kSlowLogPolls;
+
+        if (polls % logEveryNPolls == 0)
+        {
+            LOG_ERROR("Waiting for samp.dll ({} s elapsed). If this never completes, the client module is missing or has been renamed.",
+                (polls * kPollIntervalMs) / 1000);
+        }
+
+        ::Sleep(kPollIntervalMs);
+        ++polls;
+    }
 
     if (!_sampModule)
     {
-        LOG_ERROR("samp.dll module handle is null.");
+        LOG_ERROR("samp.dll is unavailable.");
         _version = SampVersion::Unknown;
         return false;
     }
@@ -67,9 +125,12 @@ bool SampVersionManager::Initialize()
     LOG_DEBUG("SA:MP PE signature not recognized (timestamp=0x{:08X}, size=0x{:X}), falling back to version info.", timestamp, sizeOfImage);
 
     wchar_t path[MAX_PATH]{};
-    if (GetModuleFileNameW(_sampModule, path, MAX_PATH) == 0)
+    const DWORD pathLength = GetModuleFileNameW(_sampModule, path, MAX_PATH);
+    if (pathLength == 0 || pathLength >= MAX_PATH)
     {
-        LOG_ERROR("Failed to retrieve samp.dll path.");
+        // Truncation returns MAX_PATH, not 0, and the zero-initialised buffer
+        // would otherwise hide it.
+        LOG_ERROR("Failed to retrieve the samp.dll path (unavailable or truncated).");
         _version = SampVersion::Unknown;
         return false;
     }
@@ -96,6 +157,15 @@ bool SampVersionManager::Initialize()
     if (!VerQueryValueW(buffer.data(), L"\\", reinterpret_cast<LPVOID*>(&fileInfo), &len))
     {
         LOG_ERROR("Failed to query version info.");
+        _version = SampVersion::Unknown;
+        return false;
+    }
+
+    // The resource is the fallback path, so at least make sure it is a version
+    // block before trusting the numbers read out of it.
+    if (len < sizeof(VS_FIXEDFILEINFO) || fileInfo->dwSignature != 0xFEEF04BD)
+    {
+        LOG_ERROR("samp.dll version resource is missing or malformed.");
         _version = SampVersion::Unknown;
         return false;
     }
