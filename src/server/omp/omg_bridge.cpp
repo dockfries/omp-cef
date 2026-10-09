@@ -276,10 +276,5 @@ bool OmpPlatformBridge::IsPlayerNpcBot(int playerid)
     if (!player)
         return false;
 
-	return player->isBot();
-}
-
-void OmpPlatformBridge::InvalidatePawn()
-{
-	pawn_ = nullptr;
+    return player->isBot();
 }
