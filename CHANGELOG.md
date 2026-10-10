@@ -1,4 +1,39 @@
 
+## [1.4.3](https://github.com/dockfries/omp-cef/compare/v1.4.2..v1.4.3) (2026-10-10)
+
+### 🧹 Chore
+
+- *(client)* Trace the create/destroy path to locate the cefspam crash - ([0b492ed](https://github.com/dockfries/omp-cef/commit/0b492eda45fc4d9f7779db174a6d2125085b9e48))
+- *(client,ci)* Make the network bookkeeping atomic and build on pushes to main - ([9b58d7c](https://github.com/dockfries/omp-cef/commit/9b58d7c09ccaa14825855913e5b593d6dce1a75e))
+- Bump the version to 1.4.3 - ([32b6398](https://github.com/dockfries/omp-cef/commit/32b6398a74827460ec8a304f50cec25acdceddaa))
+
+### 🐛 Bug Fixes
+
+- *(client)* Stop hanging the exit on the io and audio threads - ([e34cb78](https://github.com/dockfries/omp-cef/commit/e34cb78901494e76191534edd0ab0c0ef204c1ac))
+- *(client)* Make the network bookkeeping atomic - ([4c7474f](https://github.com/dockfries/omp-cef/commit/4c7474f9fbf3907a3965afceaa4868b518ce0b6f))
+- *(client)* Send UDP from the thread that owns the socket - ([3e54ff3](https://github.com/dockfries/omp-cef/commit/3e54ff3fe74914c88bc66a3667f8f431c85c2096))
+- *(client)* Give the resource gate a deadline and a way to report failure - ([089cc42](https://github.com/dockfries/omp-cef/commit/089cc42ce476b215645f7b2b2c61ccf0ab0aac3a))
+- *(client)* Verify the class selection pointer before patching it - ([d8355a5](https://github.com/dockfries/omp-cef/commit/d8355a5a5dfe75a4842cff4058aff3866e00b4a8))
+- *(client)* Report a bad master resource key instead of waiting forever - ([a3e5753](https://github.com/dockfries/omp-cef/commit/a3e575364657c92df87fcec91c8f8f8bb5b53423))
+- *(client)* Drive the device reset paths from the snapshot and drop the diagnostics - ([7c3d58e](https://github.com/dockfries/omp-cef/commit/7c3d58ea42e50923fdb97bd10017a91b3a721c77))
+- *(client)* Swap object textures from the bindings in the snapshot - ([0601c53](https://github.com/dockfries/omp-cef/commit/0601c5349e5baa44b7bc53d80d473df5659c3d9a))
+- *(client)* Own the paint buffer and the world renderer in the browser instance - ([8fb0c0f](https://github.com/dockfries/omp-cef/commit/8fb0c0fe00f9801763c1f62fd14aa843eb95e0ef))
+- *(client)* Let RenderAll walk an immutable browser list - ([4bc2be4](https://github.com/dockfries/omp-cef/commit/4bc2be41760163970974b29417ed009ff5c4e41b))
+- *(client)* Keep the window subclass, the renderer teardown and the object attach in order - ([5488004](https://github.com/dockfries/omp-cef/commit/54880040688f6b128e1bbac17e1bb3ee36f1549c))
+- *(client,server)* Harden the browser lifetime, the network path and the exit - ([643a203](https://github.com/dockfries/omp-cef/commit/643a203a3b34b3bfb161688741f838f948ba68be))
+
+### ♻️ Refactoring
+
+- *(client)* Remove the two maps nothing writes any more - ([0fbe134](https://github.com/dockfries/omp-cef/commit/0fbe1340ed18c66498c4cc52966a4325b060e4ae))
+- *(client)* Publish the world renderer together with each browser in the snapshot - ([b2d191e](https://github.com/dockfries/omp-cef/commit/b2d191e01eb41d17a9edc240f5e1688e19df6224))
+
+### Merge
+
+- Browser state race fix, resource gate deadlines and network single owner - ([35b8652](https://github.com/dockfries/omp-cef/commit/35b8652c060003627fbf8fdb3c3d8da4868037fa))
+
+
+
+
 ## [1.4.2](https://github.com/dockfries/omp-cef/compare/v1.4.1..v1.4.2) (2026-10-09)
 
 ### 🧹 Chore
