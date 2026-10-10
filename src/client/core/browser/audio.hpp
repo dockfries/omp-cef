@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <chrono>
 #include <thread>
 #include <condition_variable>
 #include <queue>
@@ -63,6 +64,11 @@ public:
     bool Initialize();
     void Shutdown();
 
+    // Stop the audio thread while the process is still healthy, i.e. from SA-MP's deinitialisation
+    // hook and not from DllMain(PROCESS_DETACH). There the loader lock is not held, so the thread
+    // and OpenAL both get the chance to finish; Shutdown() then turns into a no-op at detach time.
+    void ShutdownBeforeProcessDetach();
+
     // CEF audio callback, converts multi-channel float to mono int16
     void OnPcmPacket(int browserId, const float** data, int frames, int channels, int sampleRate);
 
@@ -78,11 +84,18 @@ public:
 private:
     void AudioThreadLoop();
 
+    // Blocks until the audio thread reported that it stopped, or the timeout expires.
+    bool WaitForAudioThread(std::chrono::milliseconds timeout);
+
     void* device_ = nullptr; // ALCdevice* (void* to avoid header dependency)
     void* context_ = nullptr; // ALCcontext*
 
     std::thread audio_thread_;
     std::atomic<bool> terminate_{ false };
+
+    // Set by the audio thread as its very last action. Shutdown() uses it to decide whether the
+    // thread is safe to join or has to be left behind (see the comment there).
+    std::atomic<bool> stopped_{ false };
 
     // Producer-consumer queue for audio packets from CEF
     std::queue<AudioPacket> packet_queue_;

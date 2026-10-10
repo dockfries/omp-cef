@@ -1,5 +1,6 @@
 #include "audio.hpp"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <AL/alc.h>
 
@@ -124,23 +125,93 @@ bool AudioManager::Initialize()
     return true;
 }
 
-void AudioManager::Shutdown()
+void AudioManager::ShutdownBeforeProcessDetach()
 {
-    if (terminate_.exchange(true)) {
+    if (terminate_.load(std::memory_order_acquire) || !audio_thread_.joinable())
+        return;
+
+    // Signal first: by the time Shutdown() runs the thread may already be gone.
+    terminate_.store(true, std::memory_order_release);
+    cv_.notify_all();
+
+    // SA-MP is deinitialising, so the process is still alive, this thread holds no loader lock and
+    // the game keeps running - a wait here is safe and gives the thread its cleanup (and its
+    // "OpenAL context and device destroyed" log line) instead of leaving libcef-style ghosts behind.
+    constexpr auto kDrainTimeout = std::chrono::milliseconds(500);
+    const bool stopped_in_time = WaitForAudioThread(kDrainTimeout);
+
+    if (!stopped_in_time) {
+        LOG_WARN("[Audio] The audio thread did not stop within {} ms while the process was still "
+                 "alive - the detach path leaves it to the process exit.", kDrainTimeout.count());
         return;
     }
 
-    LOG_INFO("Shutting down audio system...");
+    if (audio_thread_.joinable() && audio_thread_.get_id() != std::this_thread::get_id())
+        audio_thread_.join();
+
+    LOG_INFO("[Audio] The audio system stopped before the process detach.");
+}
+
+bool AudioManager::WaitForAudioThread(std::chrono::milliseconds timeout)
+{
+    if (stopped_.load(std::memory_order_acquire))
+        return true;
+
+    std::unique_lock<std::mutex> lock(queue_mutex_);
+    return cv_.wait_for(lock, timeout, [this] {
+        return stopped_.load(std::memory_order_acquire);
+    });
+}
+
+void AudioManager::Shutdown()
+{
+    // Repeat calls only have to finish an earlier one that had to give up on the join.
+    const bool already_signalled = terminate_.exchange(true);
+    if (already_signalled && !audio_thread_.joinable()) {
+        return;
+    }
+
+    if (!already_signalled) {
+        LOG_INFO("Shutting down audio system...");
+    }
 
     cv_.notify_all();
 
-    if (audio_thread_.joinable()) {
-        audio_thread_.join();
+    // This is reached twice: first from App::Shutdown() while the process is still healthy, and again
+    // from the detach path in DllMain(PROCESS_DETACH), where the loader lock is held.
+    //
+    // The audio thread must never be waited for in the second case. It can be inside an OpenAL call
+    // whose own mixing thread needs that loader lock, which is why the exit used to hang right after
+    // this message, and why the first attempt at a fix - a one second grace period, then a detach -
+    // still did not help: the OpenAL teardown below then blocked on the very same lock.
+    //
+    // So: only a thread that has already reported itself stopped is joined (that join cannot block),
+    // anything else is detached and OpenAL is left to the process exit.
+    bool stopped_cleanly = !audio_thread_.joinable();
+
+    if (audio_thread_.joinable() && audio_thread_.get_id() != std::this_thread::get_id()) {
+        const bool running = !stopped_.load(std::memory_order_acquire);
+
+        if (running) {
+            LOG_DEBUG("[Audio] The audio thread did not stop within the wait - detaching it.");
+            audio_thread_.detach();
+        } else {
+            audio_thread_.join();
+            stopped_cleanly = true;
+        }
     }
 
     // Release OpenAL once nothing can use it any more. Without this the device (and its mixing
     // thread) stays open for the rest of the process, and a later Initialize() would report success
     // while the mixer thread that consumes the queue is gone for good.
+    //
+    // Only when the audio thread is gone: if it is still alive (detached above), the context and the
+    // device belong to it, and touching them here is what hangs the exit.
+    if (!stopped_cleanly) {
+        LOG_DEBUG("[Audio] The audio thread is still alive - OpenAL is left to the process exit.");
+        return;
+    }
+
     alcMakeContextCurrent(nullptr);
 
     if (context_) {
@@ -277,6 +348,15 @@ void AudioManager::SetStreamAudioMode(int browserId, AudioMode mode)
 
 void AudioManager::AudioThreadLoop()
 {
+    // Whatever way this loop leaves - terminate_, the context failing to become current, an
+    // exception - the thread has to report that it is gone, because Shutdown() joins it on that
+    // answer. Everything below runs before the flag is set.
+    struct StopReport
+    {
+        std::atomic<bool>& flag;
+        ~StopReport() { flag.store(true, std::memory_order_release); }
+    } stop_report{ stopped_ };
+
     if (!alcMakeContextCurrent(static_cast<ALCcontext*>(context_))) {
         LOG_ERROR_EX("Audio thread failed to make context current");
         CheckAlcError(static_cast<ALCdevice*>(device_), "AudioThreadLoop::alcMakeContextCurrent");

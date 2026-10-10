@@ -58,10 +58,19 @@ bool NetworkManager::Initialize(const std::string& ip, unsigned short port)
 
 void NetworkManager::Shutdown()
 {
-	Disconnect();
+	// Never wait for the io thread here. This runs from App::Shutdown(), i.e. inside
+	// DllMain(PROCESS_DETACH) with the loader lock held, and the thread may be inside a pak verify
+	// (disk I/O + AES + SHA-256) or any call that needs that same lock - which is what used to hang
+	// the exit. Disconnect() is not used because it joins; the cleanup is posted and the thread is
+	// detached, so it ends with the process while the manager itself is left alive
+	// (see system/exit_lifetime.hpp, which also keeps what the thread may still touch valid).
+	state_.store(ConnectionState::DISCONNECTED, std::memory_order_release);
+	FireSessionActive(false);
 
-	if (network_thread_.joinable() && network_thread_.get_id() != std::this_thread::get_id()) {
-		network_thread_.join();
+	if (network_thread_.joinable())
+	{
+		asio::post(io_context_, [this]() { CleanupTransport(); });
+		network_thread_.detach();
 	}
 }
 

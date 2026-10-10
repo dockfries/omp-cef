@@ -193,6 +193,13 @@ bool Runtime::Start()
 			renderhook_->Shutdown();
 			renderhook_.reset();
 		}
+
+		// Same reasoning for the audio thread: stopping it here, and not from
+		// DllMain(PROCESS_DETACH), is what keeps OpenAL from deadlocking the exit - the thread (and
+		// the OpenAL mixer behind it) needs locks that the loader lock blocks during the detach.
+		// After the browsers are closed, so no CEF audio callback can arrive in between.
+		if (audio_)
+			audio_->ShutdownBeforeProcessDetach();
 	};
 
 	if (!samp_->Initialize())
@@ -375,11 +382,14 @@ void Runtime::Stop()
 		hooks_.reset();
 	}
 
-	// The network manager and the logger are left alive on purpose - see system/exit_lifetime.hpp.
-	// The io thread can still be running (and logging) here, and tearing its asio objects down from
-	// this thread is what used to block the exit.
+	// The network manager, the logger, the audio manager and the app are left alive on purpose - see
+	// system/exit_lifetime.hpp. The io and audio threads can still be running (and logging) here:
+	// audio_->Shutdown() does not wait for its thread any more, and the AudioManager must outlive
+	// that thread, so it is handed over instead of being destroyed from DllMain.
 	exit_lifetime::Abandon(std::move(network_));
 	exit_lifetime::Abandon(std::move(logger_));
+	exit_lifetime::Abandon(std::move(app_));
+	exit_lifetime::Abandon(std::move(audio_));
 }
 
 Runtime::~Runtime()
