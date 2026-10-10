@@ -15,6 +15,12 @@ ViewTexture::~ViewTexture()
 
 void ViewTexture::ReleaseResources()
 {
+    if (state_block_)
+    {
+        state_block_->Release();
+        state_block_ = nullptr;
+    }
+
     if (texture_) 
     { 
         texture_->Release(); 
@@ -62,6 +68,8 @@ bool ViewTexture::Create(LPDIRECT3DDEVICE9 device, int width, int height)
     }
 
     strncpy_s(rwTexture_->name, "CEF_BROWSER", sizeof(rwTexture_->name));
+
+    isLost_ = false;
     return true;
 }
 
@@ -196,6 +204,14 @@ void ViewTexture::Draw(int x, int y)
     if (!device_ || !texture_) 
         return;
 
+    // The draw below replaces texture stage 0, several render states, the sampler filters and the
+    // FVF. None of that may leak into the game's next frame (RenderWare caches its own state), so
+    // capture everything first and restore it afterwards.
+    if (!state_block_)
+        device_->CreateStateBlock(D3DSBT_ALL, &state_block_);
+
+    const bool captured = (state_block_ != nullptr) && SUCCEEDED(state_block_->Capture());
+
     device_->SetTexture(0, texture_);
     device_->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
     device_->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
@@ -221,12 +237,21 @@ void ViewTexture::Draw(int x, int y)
 
     device_->SetFVF(D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1);
     device_->DrawPrimitiveUP(D3DPT_TRIANGLESTRIP, 2, quad, sizeof(Vertex));
+
+    if (captured)
+        state_block_->Apply();
 }
 
 void ViewTexture::OnDeviceLost()
 {
     LOG_DEBUG("[ViewTexture] Device lost, releasing D3D9 texture only");
     
+    if (state_block_)
+    {
+        state_block_->Release();
+        state_block_ = nullptr;
+    }
+
     // Release ONLY the D3D9 texture (D3DPOOL_MANAGED resource)
     if (texture_) {
         texture_->Release();
@@ -247,7 +272,15 @@ void ViewTexture::OnDeviceReset(LPDIRECT3DDEVICE9 device)
     LOG_DEBUG("[ViewTexture] Device reset, recreating D3D9 texture {}x{}", width_, height_);
     
     device_ = device;
-    
+
+    // Release whatever is still there: CreateTexture writes the member directly and the previous
+    // texture (created while the device was considered lost) would be leaked.
+    if (texture_)
+    {
+        texture_->Release();
+        texture_ = nullptr;
+    }
+
     // Recreate the D3D9 texture
     HRESULT hr = device_->CreateTexture(width_, height_, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED, &texture_, nullptr);
     if (FAILED(hr)) 

@@ -110,7 +110,15 @@ void NetworkManager::Connect(int playerid)
 		if (!network_thread_.joinable()) {
 			network_thread_ = std::thread([this]() {
 				LOG_INFO("[CLIENT] Network thread started.");
-				io_context_.run();
+				try {
+					io_context_.run();
+				}
+				catch (const std::exception& e) {
+					LOG_ERROR("[CLIENT] Network thread stopped after an unhandled exception: {}", e.what());
+				}
+				catch (...) {
+					LOG_ERROR("[CLIENT] Network thread stopped after an unknown exception.");
+				}
 				LOG_INFO("[CLIENT] Network thread finished.");
 			});
 		}
@@ -191,7 +199,17 @@ void NetworkManager::DoReceive()
 		[this](std::error_code ec, std::size_t bytes_recvd) {
 			if (!ec && bytes_recvd > 0) {
 				if (remote_endpoint_ == server_endpoint_) {
-					HandleRawMessage(recv_buffer_.data(), bytes_recvd);
+					// Nothing may escape a handler: an exception out of io_context::run() would
+					// terminate the process, and this thread has no other catch site.
+					try {
+						HandleRawMessage(recv_buffer_.data(), bytes_recvd);
+					}
+					catch (const std::exception& e) {
+						LOG_ERROR("[CLIENT] Packet handling failed: {}", e.what());
+					}
+					catch (...) {
+						LOG_ERROR("[CLIENT] Packet handling failed with an unknown exception.");
+					}
 				}
 			}
 			if (state_ != ConnectionState::DISCONNECTED) {
@@ -203,12 +221,23 @@ void NetworkManager::DoReceive()
 
 void NetworkManager::HandleRawMessage(const char* data, size_t len)
 {
-	if (kcp_instance_) {
-		int input_res = ikcp_input(kcp_instance_, data, static_cast<long>(len));
-		if (input_res < 0) {
-			LOG_WARN("[KCP] ikcp_input error: {}.", input_res);
-		}
+	bool kcp_active = false;
+	{
+		// ikcp_input/ikcp_recv share the connection state with the ikcp_send/ikcp_flush calls made
+		// from the game and CEF UI threads, so they take the same lock.
+		std::lock_guard<std::recursive_mutex> lock(kcp_mutex_);
 
+		if (kcp_instance_) {
+			kcp_active = true;
+
+			int input_res = ikcp_input(kcp_instance_, data, static_cast<long>(len));
+			if (input_res < 0) {
+				LOG_WARN("[KCP] ikcp_input error: {}.", input_res);
+			}
+		}
+	}
+
+	if (kcp_active) {
 		HandleKcpInput();
 		return;
 	}
@@ -278,7 +307,7 @@ void NetworkManager::HandleRawMessage(const char* data, size_t len)
 			FireSessionActive(true);
 
 			{
-				std::lock_guard<std::mutex> lock(kcp_mutex_);
+				std::lock_guard<std::recursive_mutex> lock(kcp_mutex_);
 				kcp_instance_ = ikcp_create(response.kcp_conv_id, this);
 				kcp_instance_->output = kcp_client_output_callback;
 				ikcp_nodelay(kcp_instance_, 1, 10, 2, 1);
@@ -321,12 +350,51 @@ void NetworkManager::HandleRawMessage(const char* data, size_t len)
 
 void NetworkManager::HandleKcpInput()
 {
-	std::vector<char> kcp_buffer(65535);
-	int msg_size;
-
-	while ((msg_size = ikcp_recv(kcp_instance_, kcp_buffer.data(), static_cast<int>(kcp_buffer.size()))) > 0)
+	// ikcp_recv runs under the KCP lock, the packets are dispatched afterwards: the handler can send
+	// packets itself and must not run while the connection state is held.
+	std::vector<std::vector<uint8_t>> payloads;
 	{
-		std::vector<uint8_t> decrypted = DecryptPacket({ kcp_buffer.begin(), kcp_buffer.begin() + msg_size }, rx_key_);
+		std::lock_guard<std::recursive_mutex> lock(kcp_mutex_);
+
+		if (!kcp_instance_)
+			return;
+
+		// Size the buffer to the message that is actually queued: the old fixed 65535 byte buffer
+		// made ikcp_recv return -3 for anything larger (a big resource manifest), which stalled the
+		// connection on that message.
+		constexpr int kMaxKcpMessageBytes = 256 * 1024;
+		std::vector<char> kcp_buffer;
+
+		for (;;)
+		{
+			const int queued = ikcp_peeksize(kcp_instance_);
+			if (queued <= 0)
+				break;
+
+			if (queued > kMaxKcpMessageBytes)
+			{
+				LOG_ERROR("[CLIENT] Dropping a {} byte KCP message (limit {}).", queued, kMaxKcpMessageBytes);
+
+				// Consume it: leaving it queued would make every later call peek the same message and
+				// stop dispatching server packets for the rest of the session.
+				std::vector<char> discard(static_cast<size_t>(queued));
+				ikcp_recv(kcp_instance_, discard.data(), queued);
+				continue;
+			}
+
+			kcp_buffer.resize(static_cast<size_t>(queued));
+
+			const int msg_size = ikcp_recv(kcp_instance_, kcp_buffer.data(), queued);
+			if (msg_size <= 0)
+				break;
+
+			payloads.emplace_back(kcp_buffer.begin(), kcp_buffer.begin() + msg_size);
+		}
+	}
+
+	for (const auto& payload : payloads)
+	{
+		std::vector<uint8_t> decrypted = DecryptPacket(payload, rx_key_);
 		if (decrypted.empty()) {
 			LOG_WARN("[CLIENT] Failed to decrypt KCP packet.");
 			continue;
@@ -352,7 +420,7 @@ void NetworkManager::CleanupTransport()
     kcp_update_timer_.cancel();
 
     {
-        std::lock_guard<std::mutex> lock(kcp_mutex_);
+        std::lock_guard<std::recursive_mutex> lock(kcp_mutex_);
         if (kcp_instance_)
         {
             ikcp_release(kcp_instance_);
@@ -395,7 +463,7 @@ void NetworkManager::SendPacket(PacketType type, const PacketPayload& payload)
 		return;
 	}
 
-	std::lock_guard<std::mutex> lock(kcp_mutex_);
+	std::lock_guard<std::recursive_mutex> lock(kcp_mutex_);
 
 	if (kcp_instance_ && state_ == ConnectionState::CONNECTED) {
 		if (tx_key_.empty()) {
@@ -433,7 +501,7 @@ void NetworkManager::SendPacket(PacketType type, const PacketPayload& payload)
 
 void NetworkManager::DoKcpUpdate()
 {
-	std::lock_guard<std::mutex> lock(kcp_mutex_);
+	std::lock_guard<std::recursive_mutex> lock(kcp_mutex_);
 
 	if (state_ != ConnectionState::CONNECTED || !kcp_instance_)
 		return;

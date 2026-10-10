@@ -108,13 +108,13 @@ struct FileDataPacket
 
 struct EmitEventPacket 
 {
-    int browserId;
+    int browserId = 0;
     std::string name;
     std::vector<Argument> args;
 };
 
 struct ClientEmitEventPacket {
-    int browserId;
+    int browserId = 0;
     std::string name;
     std::vector<Argument> args;
 };

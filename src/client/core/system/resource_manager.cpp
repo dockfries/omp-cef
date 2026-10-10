@@ -33,7 +33,7 @@ void ResourceManager::Initialize()
 
 void ResourceManager::SetResourcesLoaderUiEnabled(bool enabled)
 {
-	resources_loader_ui_enabled_ = enabled;
+	resources_loader_ui_enabled_.store(enabled, std::memory_order_release);
 
 	if (download_dialog_)
 		download_dialog_->SetEnabled(enabled);
@@ -61,14 +61,18 @@ void ResourceManager::OnDisconnect()
 
 void ResourceManager::SetMasterKey(const std::vector<uint8_t>& key)
 {
+	std::lock_guard<std::mutex> lock(download_mutex_);
 	master_key_ = key;
 }
 
 void ResourceManager::OnManifestReceived(const std::string& manifestJson)
 {
 	try {
-		server_manifest_ = nlohmann::json::parse(manifestJson);
-		LOG_DEBUG("[ResourceManager] Manifest received with {} resources", server_manifest_.size());
+		nlohmann::json parsed = nlohmann::json::parse(manifestJson);
+		LOG_DEBUG("[ResourceManager] Manifest received with {} resources", parsed.size());
+
+		std::lock_guard<std::mutex> lock(download_mutex_);
+		server_manifest_ = std::move(parsed);
 	}
 	catch (const std::exception& e) {
 		LOG_ERROR("[ResourceManager] Failed to parse manifest: {}", e.what());
@@ -77,6 +81,8 @@ void ResourceManager::OnManifestReceived(const std::string& manifestJson)
 
 void ResourceManager::MarkAsReadyToDownload()
 {
+	std::lock_guard<std::mutex> lock(download_mutex_);
+
 	DownloadState expected = DownloadState::IDLE;
 	if (state_.compare_exchange_strong(expected, DownloadState::AWAITING_TRIGGER)) {
 		LOG_INFO("[ResourceManager] Ready to download.");
@@ -85,6 +91,9 @@ void ResourceManager::MarkAsReadyToDownload()
 
 void ResourceManager::TriggerDownload()
 {
+	// Also called from App::Tick, while the manifest and the key are written by the network thread.
+	std::lock_guard<std::mutex> lock(download_mutex_);
+
 	DownloadState expected = DownloadState::AWAITING_TRIGGER;
 	if (!state_.compare_exchange_strong(expected, DownloadState::VERIFYING_CACHE)) {
 		return;
@@ -112,35 +121,55 @@ void ResourceManager::TriggerDownload()
 	std::vector<std::pair<std::string, std::string>> files_to_request;
 	std::vector<FileProgressData> progress_list;
 
-	for (auto& [resourceName, files] : server_manifest_.items()) {
-        for (auto& file_entry : files) {
-            std::string path = file_entry["path"];
-            std::string server_hash = file_entry["hash"];
-            size_t server_size = file_entry["size"];
-            std::string local_path = server_cache_path_ + path;
+	try {
+		for (auto& [resourceName, files] : server_manifest_.items()) {
+			if (!files.is_array()) {
+				LOG_ERROR("[ResourceManager] Manifest entry '{}' is not a list - ignoring it.", resourceName);
+				continue;
+			}
 
-            bool file_exists = std::filesystem::exists(local_path);
-            if (file_exists) {
-                size_t actual_size = std::filesystem::file_size(local_path);
-                std::string local_hash = CalculateSHA256(local_path);
+			for (auto& file_entry : files) {
+				if (!file_entry.is_object() ||
+					!file_entry.contains("path") || !file_entry["path"].is_string() ||
+					!file_entry.contains("hash") || !file_entry["hash"].is_string() ||
+					!file_entry.contains("size") || !file_entry["size"].is_number_unsigned()) {
+					LOG_ERROR("[ResourceManager] Malformed manifest entry in '{}' - ignoring it.", resourceName);
+					continue;
+				}
 
-                if (local_hash == server_hash) {
+				std::string path = file_entry["path"];
+				std::string server_hash = file_entry["hash"];
+				size_t server_size = file_entry["size"];
+				std::string local_path = server_cache_path_ + path;
 
-                    if (LoadPakIntoVFS(resourceName, local_path)) {
-                        continue;
-                    }
-                }
-            }
+				bool file_exists = std::filesystem::exists(local_path);
+				if (file_exists) {
+					std::string local_hash = CalculateSHA256(local_path);
 
-            files_to_request.push_back({ resourceName, path });
-            FileProgressData progress;
-            progress.fileName = path;
-            progress.fileHash = server_hash;
-            progress.totalSize = server_size;
-            progress.isComplete = false;
-            progress_list.push_back(std::move(progress));
-        }
-    }
+					if (local_hash == server_hash) {
+
+						if (LoadPakIntoVFS(resourceName, local_path)) {
+							continue;
+						}
+					}
+				}
+
+				files_to_request.push_back({ resourceName, path });
+				FileProgressData progress;
+				progress.fileName = path;
+				progress.fileHash = server_hash;
+				progress.totalSize = server_size;
+				progress.isComplete = false;
+				progress_list.push_back(std::move(progress));
+			}
+		}
+	}
+	catch (const std::exception& e) {
+		// This runs on the game thread inside App::Tick: an exception must not escape it.
+		Fail("invalid server manifest");
+		LOG_ERROR("[ResourceManager] Manifest processing failed: {}", e.what());
+		return;
+	}
 
 	download_progress_ = std::move(progress_list);
 
@@ -154,7 +183,9 @@ void ResourceManager::TriggerDownload()
 		}
 
 		LOG_DEBUG("[ResourceManager] Starting download for {} file(s):", download_progress_.size());
-		download_dialog_->Start(dialog_files);
+
+		if (download_dialog_)
+			download_dialog_->Start(dialog_files);
 
 		RequestFilesPacket request_packet;
 		request_packet.files = std::move(files_to_request);
@@ -193,10 +224,19 @@ void ResourceManager::Update(uint64_t nowMs)
 	if (state == DownloadState::FAILED || state == DownloadState::COMPLETED || state == DownloadState::IDLE)
 		return;
 
-	if (state == DownloadState::AWAITING_TRIGGER && !server_manifest_.empty() && master_key_.size() >= 16)
+	if (state == DownloadState::AWAITING_TRIGGER)
 	{
-		TriggerDownload();
-		return;
+		bool ready_to_download = false;
+		{
+			std::lock_guard<std::mutex> lock(download_mutex_);
+			ready_to_download = !server_manifest_.empty() && master_key_.size() >= 16;
+		}
+
+		if (ready_to_download)
+		{
+			TriggerDownload();
+			return;
+		}
 	}
 
 	if (state == DownloadState::AWAITING_TRIGGER)
@@ -261,7 +301,8 @@ void ResourceManager::OnFileData(const FileDataPacket& packet)
 					? static_cast<int>((static_cast<double>(progress.bytesReceived) / progress.totalSize) * 100.0)
 					: 100;
 				
-				download_dialog_->Update(static_cast<uint32_t>(i), download_progress_[i].bytesReceived);
+				if (download_dialog_)
+					download_dialog_->Update(static_cast<uint32_t>(i), download_progress_[i].bytesReceived);
 			}
 		}
 	}
@@ -340,7 +381,9 @@ void ResourceManager::OnFileData(const FileDataPacket& packet)
 				LOG_INFO("[ResourceManager] All downloads complete!");
 
 				state_ = DownloadState::COMPLETED;
-				download_dialog_->Finish();
+
+				if (download_dialog_)
+					download_dialog_->Finish();
 			}
 		}
 		catch (const std::exception& e) {

@@ -36,10 +36,30 @@ void DownloadDialog::SetEnabled(bool enabled)
     enabled_ = enabled;
 
     // If UI is disabled while a loader is visible, close it immediately.
-    if (!enabled_ && loader_visible_)
+    if (!enabled_ && loader_visible_.load(std::memory_order_acquire))
     {
         HideLoader();
     }
+}
+
+// These run on the CEF UI thread. They take the objects they need instead of |this| because a
+// posted task can outlive the dialog (Runtime::Stop destroys it while tasks may still be queued).
+static void HideLoaderOnUi(BrowserManager* browser, HudManager* hud, std::atomic<bool>* loader_visible)
+{
+    if (!browser || !loader_visible)
+        return;
+
+    const bool has_loader = (browser->GetBrowserInstance(kLoaderBrowserId) != nullptr);
+    if (has_loader)
+        browser->DestroyBrowser(kLoaderBrowserId);
+
+    if (hud && (loader_visible->load(std::memory_order_acquire) || has_loader))
+    {
+        hud->ToggleComponent(EHudComponent::ALL, true);
+        hud->SetClassSelectionVisible(true);
+    }
+
+    loader_visible->store(false, std::memory_order_release);
 }
 
 void DownloadDialog::EnsureLoaderVisible()
@@ -52,7 +72,7 @@ void DownloadDialog::EnsureLoaderVisible()
 
     if (browser_->GetBrowserInstance(kLoaderBrowserId))
     {
-        loader_visible_ = true;
+        loader_visible_.store(true, std::memory_order_release);
         return;
     }
 
@@ -63,7 +83,7 @@ void DownloadDialog::EnsureLoaderVisible()
 
     // Create internal loader page (no focus)
     browser_->CreateBrowser(kLoaderBrowserId, kLoaderUrl, false, false, -1.f, -1.f);
-    loader_visible_ = true;
+    loader_visible_.store(true, std::memory_order_release);
 
     // Push manifest info right away
     JsCall("window.__ompcef && window.__ompcef.manifest(" +
@@ -72,19 +92,7 @@ void DownloadDialog::EnsureLoaderVisible()
 
 void DownloadDialog::HideLoader()
 {
-    if (!browser_)
-        return;
-
-    const bool has_loader = (browser_->GetBrowserInstance(kLoaderBrowserId) != nullptr);
-    if (has_loader)
-        browser_->DestroyBrowser(kLoaderBrowserId);
-
-    if (hud_ && (loader_visible_ || has_loader)) {
-        hud_->ToggleComponent(EHudComponent::ALL, true);
-        hud_->SetClassSelectionVisible(true);
-    }
-
-    loader_visible_ = false;
+    HideLoaderOnUi(browser_, hud_, &loader_visible_);
 }
 
 void DownloadDialog::JsCall(const std::string& js)
@@ -95,16 +103,20 @@ void DownloadDialog::JsCall(const std::string& js)
     if (!browser_)
         return;
 
-    // Execute on CEF UI thread
-    CefPostTask(TID_UI, base::BindOnce([](DownloadDialog* self, std::string code)
+    // Execute on the CEF UI thread. Only |browser_| is captured: it outlives this dialog, which a
+    // posted task may not.
+    CefPostTask(TID_UI, base::BindOnce([](BrowserManager* browser, std::string code)
     {
-        auto* inst = self->browser_->GetBrowserInstance(kLoaderBrowserId);
-        if (!inst || !inst->browser)
+        CefRefPtr<CefBrowser> handle = browser->GetBrowserHandle(kLoaderBrowserId);
+        if (!handle)
             return;
 
-        auto frame = inst->browser->GetMainFrame();
+        CefRefPtr<CefFrame> frame = handle->GetMainFrame();
+        if (!frame || !frame->IsValid())
+            return;
+
         frame->ExecuteJavaScript(code, frame->GetURL(), 0);
-    }, base::Unretained(this), js));
+    }, browser_, js));
 }
 
 void DownloadDialog::Start(std::vector<std::pair<std::string, size_t>> files)
@@ -188,11 +200,10 @@ void DownloadDialog::Finish()
     {
         JsCall("window.__ompcef && window.__ompcef.done();");
 
-        // Let user see 100% shortly, then hide
+        // Let the user see 100% shortly, then hide. The task captures the objects it needs instead
+        // of |this|, which can be gone by then.
         CefPostDelayedTask(TID_UI,
-            base::BindOnce([](DownloadDialog* self) { 
-                self->HideLoader(); 
-            }, base::Unretained(this)),
+            base::BindOnce(&HideLoaderOnUi, browser_, hud_, &loader_visible_),
             700);
     }
 

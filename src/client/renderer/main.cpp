@@ -359,6 +359,15 @@ public:
         if (!browser)
             return;
 
+        // Registered handlers are plain V8 functions; running one after its context was released
+        // crashes the renderer process. A main frame release means the page navigated or reloaded,
+        // and the new document registers its handlers again.
+        if (frame && frame->IsMain())
+        {
+            events_.clear();
+            pending_events_.clear();
+        }
+
         const auto it = screen_capture_callbacks_.find(browser->GetIdentifier());
         if (it == screen_capture_callbacks_.end() ||
             !it->second.context || !it->second.context->IsSame(context))
@@ -464,7 +473,15 @@ public:
             CefRefPtr<CefV8Context> context = frame->GetV8Context();
             if (!hasHandler || !context || !context->Enter())
             {
-                pending_events_[eventName].push_back(CapturePendingArgs(args));
+                // Bounded: a page that never registers a handler while the server keeps emitting
+                // must not grow this queue without limit.
+                constexpr size_t kMaxPendingPerEvent = 64;
+
+                auto& queued = pending_events_[eventName];
+                while (queued.size() >= kMaxPendingPerEvent)
+                    queued.erase(queued.begin());
+
+                queued.push_back(CapturePendingArgs(args));
                 return true;
             }
 

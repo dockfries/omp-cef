@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <vector>
 #include <utility>
 #include <cstdint>
@@ -37,7 +38,10 @@ private:
 
     bool active_ = false;
     bool enabled_ = true;
-    bool loader_visible_ = false;
+
+    // Read and written from CEF tasks that outlive this object, so it is atomic and the tasks below
+    // never capture |this|.
+    std::atomic<bool> loader_visible_{ false };
 
     std::vector<std::pair<std::string, size_t>> files_;
     std::vector<uint64_t> received_by_file_;

@@ -50,6 +50,46 @@ void HudManager::Pump()
     }
 }
 
+// The HUD patch addresses below are absolute addresses inside gta_sa.exe, so they are only valid
+// while the executable sits at its image base, and a bad read or write is an access violation
+// rather than a C++ exception (try/catch cannot catch it).
+enum class PageAccess
+{
+    Read,
+    Write
+};
+
+static bool GameImageIsAtExpectedBase()
+{
+    constexpr uintptr_t kExpectedImageBase = 0x400000;
+    return reinterpret_cast<uintptr_t>(::GetModuleHandleA(nullptr)) == kExpectedImageBase;
+}
+
+static bool IsAccessiblePointer(const void* pointer, size_t bytes, PageAccess access)
+{
+    if (!pointer || bytes == 0)
+        return false;
+
+    MEMORY_BASIC_INFORMATION info{};
+    if (::VirtualQuery(pointer, &info, sizeof(info)) == 0)
+        return false;
+
+    if (info.State != MEM_COMMIT || (info.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0)
+        return false;
+
+    if (access == PageAccess::Write && (info.Protect & (PAGE_READONLY | PAGE_EXECUTE_READ)) != 0)
+        return false;
+
+    const auto start = reinterpret_cast<uintptr_t>(pointer);
+    const auto end = reinterpret_cast<uintptr_t>(info.BaseAddress) + info.RegionSize;
+    return start + bytes <= end;
+}
+
+static bool IsWritablePointer(const void* pointer, size_t bytes)
+{
+    return IsAccessiblePointer(pointer, bytes, PageAccess::Write);
+}
+
 void HudManager::ApplyToggle(EHudComponent component, bool toggle)
 {
     if (component == EHudComponent::ALL) {
@@ -66,6 +106,13 @@ void HudManager::ApplyToggle(EHudComponent component, bool toggle)
 
     auto& patch = it->second;
 
+    if (!GameImageIsAtExpectedBase() ||
+        !IsAccessiblePointer(reinterpret_cast<const void*>(patch.address), patch.disabled_bytes.size(), PageAccess::Read))
+    {
+        LOG_WARN("[HudManager] Refusing to patch {:X}: unexpected game image base or unreadable target.", patch.address);
+        return;
+    }
+
     // Capture original bytes once so we can restore later
     if (!patch.original_saved) {
         patch.original_bytes.resize(patch.disabled_bytes.size());
@@ -79,26 +126,6 @@ void HudManager::ApplyToggle(EHudComponent component, bool toggle)
     else {
         Patch(patch.address, patch.disabled_bytes);
     }
-}
-
-// The class selection object lives inside the SA-MP client image, so the pointer read from it
-// cannot be trusted: confirm the page is committed and writable before touching it. A bad write
-// here is an access violation, not a C++ exception, so try/catch cannot catch it.
-static bool IsWritablePointer(const void* pointer, size_t bytes)
-{
-    if (!pointer)
-        return false;
-
-    MEMORY_BASIC_INFORMATION info{};
-    if (::VirtualQuery(pointer, &info, sizeof(info)) == 0)
-        return false;
-
-    if (info.State != MEM_COMMIT || (info.Protect & (PAGE_NOACCESS | PAGE_GUARD)) != 0)
-        return false;
-
-    const auto start = reinterpret_cast<uintptr_t>(pointer);
-    const auto end = reinterpret_cast<uintptr_t>(info.BaseAddress) + info.RegionSize;
-    return start + bytes <= end;
 }
 
 void HudManager::ApplyClassSelectionVisible(bool visible)
@@ -140,7 +167,14 @@ void HudManager::ApplyClassSelectionVisible(bool visible)
 
     try
     {
-        auto pClassSelection = *reinterpret_cast<uintptr_t*>(base + ptr_offset);
+        const auto storage = reinterpret_cast<const void*>(base + ptr_offset);
+        if (!IsAccessiblePointer(storage, sizeof(uintptr_t), PageAccess::Read))
+        {
+            LOG_WARN("[HudManager] Class selection pointer storage is not readable - visibility patch skipped.");
+            return;
+        }
+
+        auto pClassSelection = *reinterpret_cast<const uintptr_t*>(storage);
         if (pClassSelection == 0)
             return;
 
@@ -160,6 +194,13 @@ void HudManager::Patch(uintptr_t address, const std::vector<unsigned char>& data
 {
     if (!address || data.empty())
         return;
+
+    if (!GameImageIsAtExpectedBase() ||
+        !IsAccessiblePointer(reinterpret_cast<const void*>(address), data.size(), PageAccess::Read))
+    {
+        LOG_ERROR("[HudManager] Refusing to patch {:X}: unexpected game image base or unreadable target.", address);
+        return;
+    }
 
     DWORD oldProtect{};
     if (VirtualProtect(reinterpret_cast<void*>(address), data.size(), PAGE_EXECUTE_READWRITE, &oldProtect)) {

@@ -110,4 +110,4 @@ ICefComponent* GetCefExtension();
 
 // Flat list of currently-registered C++ event handlers (used by plugin.cpp to
 // forward events alongside the AMX-public dispatch).
-const std::vector<ICefEventHandler*>& GetCefEventHandlers();
+std::vector<ICefEventHandler*> GetCefEventHandlers();

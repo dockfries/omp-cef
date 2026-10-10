@@ -90,7 +90,7 @@ namespace
             DestroyWindow(hwnd);
     }
 
-    bool CreateDummyDevice(IDirect3DDevice9** outDevice) noexcept
+    bool CreateDummyDevice(IDirect3DDevice9** outDevice, HWND* outWindow) noexcept
     {
         if (!outDevice)
             return false;
@@ -147,11 +147,19 @@ namespace
                 &dev);
         }
 
-        DestroyDummyWindow(hwnd);
         d3d->Release();
 
         if (FAILED(hr) || !dev)
+        {
+            DestroyDummyWindow(hwnd);
             return false;
+        }
+
+        // The window is handed back instead of being destroyed here: D3D9 subclasses the focus
+        // window and keeps per-window data, so it has to outlive the device. Destroying it first
+        // leaves the device pointing at a dead window, and a focus change (Alt+Tab) walks that.
+        if (outWindow)
+            *outWindow = hwnd;
 
         *outDevice = dev;
         return true;
@@ -237,14 +245,17 @@ void RenderManager::Shutdown()
 bool RenderManager::TryInstallBootstrapHooks() noexcept
 {
     IDirect3DDevice9* dummy = nullptr;
+    HWND dummy_window = nullptr;
 
-    if (!CreateDummyDevice(&dummy) || !dummy)
+    if (!CreateDummyDevice(&dummy, &dummy_window) || !dummy)
         return false;
 
     // Install hooks based on dummy vtable function pointers.
     EnsureDeviceHooksInstalled(dummy);
 
+    // Release the device before the window it was created on (see CreateDummyDevice).
     dummy->Release();
+    DestroyDummyWindow(dummy_window);
 
     // If we got at least Present hooked, we're good.
     return (orig_present_ != nullptr);
@@ -360,7 +371,20 @@ bool RenderManager::ConvertScreenYValueToBaseYValue(float screen, float& base) c
 
 bool RenderManager::IsGameDeviceCandidate(const D3DPRESENT_PARAMETERS* pp, HWND presentHwnd) const noexcept
 {
-    // If we know the game hwnd, we filter strictly to avoid capturing overlay/helper devices.
+    // A device that presents into another process's window is not the game's device (an overlay or a
+    // capture tool). Present() usually passes no window override, so fall back to the device window.
+    HWND target = presentHwnd ? presentHwnd : (pp ? pp->hDeviceWindow : nullptr);
+    if (target)
+    {
+        DWORD target_pid = 0;
+        ::GetWindowThreadProcessId(target, &target_pid);
+        if (target_pid != 0 && target_pid != ::GetCurrentProcessId())
+            return false;
+    }
+
+    // Until the game window is known this is all we can go on. A device captured too early is not
+    // fatal any more: when the real one takes over, the device callbacks rebuild what the browsers
+    // own (see RenderManager::OnDeviceInitialize).
     if (!game_hwnd_)
         return true;
 

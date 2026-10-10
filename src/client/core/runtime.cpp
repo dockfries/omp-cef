@@ -20,6 +20,7 @@
 #include "samp/hooks/chat.hpp"
 #include "samp/hooks/scoreboard.hpp"
 #include "system/config_manager.hpp"
+#include "system/exit_lifetime.hpp"
 #include "system/gta.hpp"
 #include "system/logger.hpp"
 #include "system/resource_manager.hpp"
@@ -180,6 +181,13 @@ bool Runtime::Start()
 
 	samp_->OnExit = [this]()
 	{
+		// SA-MP is deinitialising while the process is still alive, so this is the last moment at
+		// which the browsers can be closed properly (libcef is delay-loaded and would be detached
+		// before us during the process teardown). Do it before the render hook goes away: closing a
+		// world browser restores the object texture it swapped.
+		if (browser_)
+			browser_->ShutdownForGameExit();
+
 		if (renderhook_)
 		{
 			renderhook_->Shutdown();
@@ -315,6 +323,11 @@ void Runtime::FinalizeInitialization(HWND hwnd)
 
 void Runtime::Stop()
 {
+	// This runs from DllMain and again from ~Runtime, and it must not run twice: the first pass
+	// resets hooks_ and the second one would dereference a null HookManager.
+	if (stopped_.exchange(true, std::memory_order_acq_rel))
+		return;
+
 	if (app_)
 		app_->Shutdown();
 
@@ -351,7 +364,9 @@ void Runtime::Stop()
 		wndproc_.reset();
 	}
 
-	CursorHook::Instance().Shutdown(*hooks_);
+	if (hooks_)
+		CursorHook::Instance().Shutdown(*hooks_);
+
 	RenderManager::Instance().Shutdown();
 
 	if (hooks_)
@@ -359,6 +374,12 @@ void Runtime::Stop()
 		hooks_->Shutdown();
 		hooks_.reset();
 	}
+
+	// The network manager and the logger are left alive on purpose - see system/exit_lifetime.hpp.
+	// The io thread can still be running (and logging) here, and tearing its asio objects down from
+	// this thread is what used to block the exit.
+	exit_lifetime::Abandon(std::move(network_));
+	exit_lifetime::Abandon(std::move(logger_));
 }
 
 Runtime::~Runtime()

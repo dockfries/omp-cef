@@ -91,9 +91,10 @@ struct BrowserInstance
 
     World2DBrowserData world2d;
 
-    bool visible = true;
+    // Written on the CEF UI thread, read by the render thread every frame.
+    std::atomic<bool> visible{ true };
     bool controls_chat_input = true;
-    bool closing = false;
+    std::atomic<bool> closing{ false };
 
     // Written on the CEF UI thread and sampled once per render frame.
     std::atomic<int> layer{0};
@@ -150,13 +151,15 @@ public:
         focus_ = focus;
     }
 
-    void SetEntityResolver(std::function<CEntity*(int)> resolver)
-    {
-        entity_resolver_ = std::move(resolver);
-    }
 
     bool Initialize();
     void Shutdown();
+
+    // Closes every browser while SA-MP is deinitialising. libcef is still loaded at that point and
+    // we are not inside DllMain, so the CEF UI thread can run the closes and the render thread can
+    // release the D3D/RenderWare resources the instances own. Shutdown() then only abandons what is
+    // left over (see system/exit_lifetime.hpp).
+    void ShutdownForGameExit();
 
     // Browser management
     void CreateBrowser(int id, const std::string& url, bool focused, bool controls_chat, float width, float height);
@@ -224,10 +227,12 @@ public:
 
     BrowserInstance* GetBrowserInstance(int id);
     BrowserInstance* GetFocusedBrowser();
-    const std::unordered_map<int, std::shared_ptr<BrowserInstance>>& GetAllBrowsers() const
-    {
-        return browsers_;
-    }
+    // Safe handle for threads that cannot rely on the instance staying alive while they use it
+    // (the network thread): the ref-counted browser is copied while the containers are locked.
+    CefRefPtr<CefBrowser> GetBrowserHandle(int id);
+    bool HasBrowser(int id) const;
+    std::vector<int> GetBrowserIds() const;
+    void ClearPendingAttaches();
     bool IsAnyBrowserVisible() const;
     bool IsAnyBrowserFocused() const;
     cef_cursor_type_t GetCursorType() const
@@ -261,6 +266,22 @@ private:
     void EmitCustomPlayerListVisibility();
 
     CEntity* GetEntityFromObjectId(int objectId);
+
+    // One attached browser, kept by the server's object id: the game entity behind an SA-MP object
+    // appears and disappears with streaming, so the pointer is refreshed every frame and never
+    // stored across frames.
+    struct AttachedObject
+    {
+        int objectId = -1;
+        int browserId = -1;
+        CEntity* entity = nullptr;
+    };
+
+    void BindObjectToBrowser(int objectId, int browserId, CEntity* entity);
+    void UnbindBrowser(int browserId);
+    void RefreshAttachedObjects();
+    void QueuePendingAttach(int browserId, int objectId);
+    void DropPendingAttaches(int browserId);
     void ClearPendingPaint(int id);
     void RestoreBrowserTextures();
     void RequestVisibleBrowsersRepaint();
@@ -294,7 +315,6 @@ private:
 
 private:
     bool initialized_ = false;
-    DWORD uiThreadId_ = 0;
     std::atomic<bool> is_shutting_down_{false};
     std::atomic<bool> isCefUpdatesPaused_{ false };
 
@@ -312,12 +332,27 @@ private:
     // The single source for which browser has focus. -1 means none.
     int focusedBrowserId_ = -1;
 
+    // Guards browsers_, entityToBrowserId_, pending_attaches_ and player_stats_poll_. The CEF UI
+    // thread is the only writer, but the game thread (render loop, WndProc, device reset) and the
+    // network thread read them as well, so every access has to take this lock.
+    mutable std::recursive_mutex browsers_mutex_;
+
     // Shared ownership: the CEF UI thread removes entries from the maps, but the objects own
     // D3D/RenderWare resources and must be destroyed on the game (render) thread, so the
     // entries are handed over instead of being destroyed in place - see ReleaseOnMainThread.
     std::unordered_map<int, std::shared_ptr<BrowserInstance>> browsers_;
-    std::unordered_map<CEntity*, int> entityToBrowserId_;
-    std::vector<std::pair<int, int>> pending_attaches_;
+    std::vector<AttachedObject> attached_objects_;
+
+    // An attach request that could not be satisfied yet: the browser may still be waiting for the
+    // resource gate and the object may not be in the client world. Guarded by browsers_mutex_.
+    struct PendingAttach
+    {
+        int browserId = -1;
+        int objectId = -1;
+        uint64_t firstSeenMs = 0;
+        bool warned = false;
+    };
+    std::vector<PendingAttach> pending_attaches_;
 
     // Never null: the render thread reads it before the first publish.
     std::shared_ptr<const RenderSnapshot> snapshot_ = std::make_shared<const RenderSnapshot>();
@@ -342,7 +377,6 @@ private:
     NetworkManager& network_;
     FocusManager* focus_ = nullptr;
 
-    std::function<CEntity*(int)> entity_resolver_{};
 
     std::atomic<bool> begin_frame_task_pending_{false};
 

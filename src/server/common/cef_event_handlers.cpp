@@ -6,7 +6,9 @@ std::vector<ICefEventHandler*>& CefHandlerList()
     return s;
 }
 
-const std::vector<ICefEventHandler*>& GetCefEventHandlers()
+std::vector<ICefEventHandler*> GetCefEventHandlers()
 {
+    // A copy: a handler that registers or unregisters handlers while it is being dispatched would
+    // otherwise invalidate the iteration (erase shifts the elements, push_back can reallocate).
     return CefHandlerList();
 }

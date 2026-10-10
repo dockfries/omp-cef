@@ -97,8 +97,9 @@ PLUGIN_EXPORT bool PLUGIN_CALL Load(void** ppData)
     const int server_port = config.GetPort(7777);
     const int cef_network_port = config.GetCefUdpPort(2);
 
-    std::string debug_str = config.GetString("cef_debug", "0");
-    bool debug_enabled_ = (std::stoi(debug_str) != 0);
+    // std::stoi throws for values like "true" or "yes", and this runs inside the PLUGIN_CALL
+    // export, so the parse has to go through the guarded helper.
+    bool debug_enabled_ = (config.GetInt("cef_debug", 0) != 0);
 
     std::string master_key_str = config.GetString("cef_master_resource_key", "ThisIsA16ByteKey");
 

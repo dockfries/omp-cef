@@ -52,6 +52,8 @@ void OmpPlatformBridge::CallPawnPublic(const std::string& name, const std::vecto
         // Releasing the heap top taken before the pushes frees all of them at once.
         cell heap_before_push = script->GetHEA();
 
+        bool args_pushed = true;
+
         for (auto it = args.rbegin(); it != args.rend(); ++it)
         {
             const auto& arg = *it;
@@ -60,23 +62,34 @@ void OmpPlatformBridge::CallPawnPublic(const std::string& name, const std::vecto
                 case ArgumentType::String:
                 {
                     std::string ansi_string = Utf8ToAnsi(arg.stringValue);
-                    script->PushString(nullptr, nullptr, ansi_string, false, false);
+                    if (script->PushString(nullptr, nullptr, ansi_string, false, false) != AMX_ERR_NONE)
+                        args_pushed = false;
                     break;
                 }
                 case ArgumentType::Integer:
-                    script->Push(arg.intValue);
+                    if (script->Push(arg.intValue) != AMX_ERR_NONE)
+                        args_pushed = false;
                     break;
                 case ArgumentType::Float:
-                    script->Push(amx_ftoc(arg.floatValue));
+                    if (script->Push(amx_ftoc(arg.floatValue)) != AMX_ERR_NONE)
+                        args_pushed = false;
                     break;
                 case ArgumentType::Bool:
-                    script->Push(arg.boolValue);
+                    if (script->Push(arg.boolValue) != AMX_ERR_NONE)
+                        args_pushed = false;
                     break;
             }
         }
 
-        cell retval;
-        script->Exec(&retval, idx);
+        // Only enter the public when every argument made it onto the stack: a failed push would
+        // otherwise leave the public reading stale cells as its arguments.
+        if (args_pushed)
+        {
+            cell retval;
+            if (script->Exec(&retval, idx) != AMX_ERR_NONE)
+                LogWarn("Pawn public '" + name + "' failed to execute.");
+        }
+
         script->Release(heap_before_push);
     };
 

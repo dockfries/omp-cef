@@ -363,7 +363,11 @@ void CefPlugin::HandleRequestJoin(const asio::ip::udp::endpoint& from, const Req
 
     LOG_INFO("RequestJoin pid=%d from=%s:%d official=%s", playerid, from_ip.c_str(), from_port, official_ip.c_str());
 
-    if (!official_ip.empty() && official_ip != from_ip)
+    if (official_ip.empty())
+    {
+        LOG_WARN("RequestJoin pid=%d: the host did not report a player IP - the IP check is skipped.", playerid);
+    }
+    else if (official_ip != from_ip)
     {
         LOG_WARN("RequestJoin dropped: IP mismatch (pid=%d, official=%s, from=%s)", playerid, official_ip.c_str(), from_ip.c_str());
         return;
@@ -495,9 +499,36 @@ void CefPlugin::HandleHandshakeFinalize(const asio::ip::udp::endpoint& from,
     join_response.client_version = PLUGIN_VERSION_U32;
     join_response.message.clear();
 
+	// This response leaves as a single raw UDP datagram - the KCP instance below does not exist yet -
+	// so the manifest has to fit one datagram (65507 bytes minus the rest of the packet). A manifest
+	// that does not fit used to make the send fail and the join time out; keep whole entries that do
+	// fit, drop the rest and say so.
+	constexpr size_t kMaxManifestBytes = 60000;
+
 	nlohmann::json manifest = resource_->GetManifestAsJson();
 	if (!manifest.is_null()) {
 		join_response.manifest_json = manifest.dump();
+
+		if (join_response.manifest_json.size() > kMaxManifestBytes) {
+			nlohmann::json trimmed = nlohmann::json::object();
+			size_t kept = 0;
+
+			for (auto& [name, entry] : manifest.items()) {
+				trimmed[name] = entry;
+
+				if (trimmed.dump().size() > kMaxManifestBytes) {
+					trimmed.erase(name);
+					break;
+				}
+
+				++kept;
+			}
+
+			LOG_ERROR("[Cef] Resource manifest does not fit one join datagram: sending %zu of %zu resources, the rest are not served.",
+				kept, manifest.size());
+
+			join_response.manifest_json = trimmed.dump();
+		}
 	}
 
 	SendRawPacketToEndpoint(from, PacketType::JoinResponse, join_response);
@@ -535,12 +566,33 @@ void CefPlugin::HandleKcpInput(std::shared_ptr<NetworkSession> session)
         if (!session->kcp_instance)
             return;
 
-        std::vector<char> kcp_buffer(65535);
-        int msg_size;
+        // See the client side: a fixed buffer makes ikcp_recv fail on messages larger than it.
+        constexpr int kMaxKcpMessageBytes = 256 * 1024;
+        std::vector<char> kcp_buffer;
 
-        while ((msg_size = ikcp_recv(session->kcp_instance, kcp_buffer.data(),
-            static_cast<int>(kcp_buffer.size()))) > 0)
+        for (;;)
         {
+            const int queued = ikcp_peeksize(session->kcp_instance);
+            if (queued <= 0)
+                break;
+
+            if (queued > kMaxKcpMessageBytes)
+            {
+                LOG_ERROR("[Cef] Dropping a %d byte KCP message (limit %d).", queued, kMaxKcpMessageBytes);
+
+                // Consume it: leaving it queued makes every later call peek the same message and stop
+                // processing anything else for this session.
+                std::vector<char> discard(static_cast<size_t>(queued));
+                ikcp_recv(session->kcp_instance, discard.data(), queued);
+                continue;
+            }
+
+            kcp_buffer.resize(static_cast<size_t>(queued));
+
+            const int msg_size = ikcp_recv(session->kcp_instance, kcp_buffer.data(), queued);
+            if (msg_size <= 0)
+                break;
+
             std::vector<uint8_t> decrypted =
                 DecryptPacket({ kcp_buffer.begin(), kcp_buffer.begin() + msg_size }, session->rx_key);
 
@@ -594,14 +646,53 @@ void CefPlugin::HandleFileRequest(int playerid, const RequestFilesPacket& reques
 	std::vector<std::pair<std::string, size_t>> queuedFiles;
 	queuedFiles.reserve(request.files.size());
 
-	// A client can repeat the same entry in one packet; queue every file only once,
-	// otherwise each duplicate re-reads the whole .pak from disk and adds another
-	// full copy to the session's queue.
+	// A client can repeat the same entry in one packet, and it can replay the whole request; queue
+	// every resource only once, otherwise each duplicate re-reads the whole .pak from disk and adds
+	// another full copy to the session's queue.
 	std::unordered_set<std::string> seen;
+
+	// What this session already holds: replayed requests must not queue a second copy.
+	std::unordered_set<std::string> already_queued;
+	size_t queued_bytes = 0;
+
+	if (session->current_transfer)
+	{
+		already_queued.insert(session->current_transfer->resourceName);
+		queued_bytes += session->current_transfer->content.size();
+	}
+
+	{
+		std::queue<std::shared_ptr<FileTransfer>> pending = session->download_queue;
+		while (!pending.empty())
+		{
+			const auto& transfer = pending.front();
+			if (transfer)
+			{
+				already_queued.insert(transfer->resourceName);
+				queued_bytes += transfer->content.size();
+			}
+			pending.pop();
+		}
+	}
+
+	constexpr size_t kMaxQueuedTransferBytes = 256u * 1024u * 1024u;
 
 	for (const auto& [resourceName, relativePath] : request.files) {
 		if (!seen.insert(resourceName + "/" + relativePath).second)
 			continue;
+
+		if (already_queued.count(resourceName))
+		{
+			LOG_DEBUG("[CEF] Resource '%s' is already queued for player %d - ignored.", resourceName.c_str(), playerid);
+			continue;
+		}
+
+		if (queued_bytes >= kMaxQueuedTransferBytes)
+		{
+			LOG_WARN("[CEF] Download queue for player %d reached %zu MB - dropping the rest of the request.",
+				playerid, kMaxQueuedTransferBytes / (1024 * 1024));
+			break;
+		}
 
 		if (resource_->IsFileValid(resourceName, relativePath)) {
 
@@ -625,6 +716,8 @@ void CefPlugin::HandleFileRequest(int playerid, const RequestFilesPacket& reques
 			transfer->currentChunkIndex = 0;
 
 			queuedFiles.emplace_back(transfer->relativePath, transfer->content.size());
+			queued_bytes += transfer->content.size();
+			already_queued.insert(resourceName);
 			session->download_queue.push(transfer);
 		}
 	}
@@ -768,7 +861,14 @@ void CefPlugin::SendPacketToPlayer(int playerid, PacketType type, const PacketPa
     if (!session->kcp_instance)
         return;
 
-    ikcp_send(session->kcp_instance, (const char*)encrypted.data(), (int)encrypted.size());
+    const int sent = ikcp_send(session->kcp_instance, (const char*)encrypted.data(), (int)encrypted.size());
+    if (sent < 0)
+    {
+        // -2 means the message needs more fragments than KCP allows in one message: the packet is
+        // dropped, so say so instead of letting the peer wait for it.
+        LOG_ERROR("[Cef] ikcp_send failed with {} for a {} byte packet - it was dropped.", sent, encrypted.size());
+        return;
+    }
 
 	// TODO: Not always flush immediately (for file transfer?)
     ikcp_flush(session->kcp_instance);

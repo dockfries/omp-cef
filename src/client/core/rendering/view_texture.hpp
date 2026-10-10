@@ -42,5 +42,9 @@ private:
     RwTexture* rwTexture_ = nullptr;
     RwRaster* rwRaster_ = nullptr;
 
+    // Reused so the draw can restore every device state it touches without leaking them into the
+    // game's next frame.
+    IDirect3DStateBlock9* state_block_ = nullptr;
+
     bool isLost_ = false;
 };

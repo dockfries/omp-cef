@@ -47,6 +47,7 @@ public:
 
 	bool IsNonCefServer() const { return non_cef_server_.load(); }
 
+
 	// Joining a different server has to clear this latch, otherwise CEF stays
 	// disabled for the rest of the process (Initialize is only called while the
 	// latch is false, so it could never clear itself).
@@ -85,7 +86,9 @@ private:
 	asio::steady_timer connect_timer_{ io_context_ };
 	asio::steady_timer kcp_update_timer_{ io_context_ };
 
-	std::mutex kcp_mutex_;
+	// Recursive: the io thread takes it for ikcp_input/ikcp_recv, and a packet handler running on
+	// that same thread may send a packet (ikcp_send/ikcp_flush) before it returns.
+	std::recursive_mutex kcp_mutex_;
 	ikcpcb* kcp_instance_ = nullptr;
 
 	std::vector<uint8_t> rx_key_;

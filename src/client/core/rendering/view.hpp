@@ -28,6 +28,9 @@ public:
 
     void Clear();
 
+    // True once the D3D texture exists, i.e. UpdateTexture/Draw actually do something.
+    bool IsReady() const noexcept { return wrapper_ != nullptr && active_; }
+
     // Returns the view's bounding rectangle for CEF
     cef_rect_t rect() const;
 

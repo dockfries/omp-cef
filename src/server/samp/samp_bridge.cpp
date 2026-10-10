@@ -336,8 +336,10 @@ void SampPlatformBridge::HideResourceDownloadDialog(int playerid)
 
 std::string SampPlatformBridge::GetPlayerAddressIp(int playerid)
 {
+    // GetPlayerIp returns non-zero on success. The test used to be inverted, which made this
+    // function always return an empty string and silently disabled the join IP check.
     char ip[64] = {};
-    if (sampgdk_GetPlayerIp(playerid, ip, sizeof(ip)) == 0)
+    if (sampgdk_GetPlayerIp(playerid, ip, sizeof(ip)) != 0 && ip[0] != '\0')
         return std::string(ip);
 
     return {};

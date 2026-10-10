@@ -27,6 +27,10 @@ void WorldRenderer::OnPaint(const void* buffer, int width, int height)
         return;
 
     viewTexture_->Update(buffer, width, height);
+
+    // Update() recreates both textures when the size changes, and that destroys the RenderWare
+    // texture SwapTexture hands to the materials: re-read it so a freed texture is never installed.
+    rwReplacement_ = viewTexture_->GetRwTexture();
 }
 
 void WorldRenderer::Clear()
@@ -98,5 +102,8 @@ void WorldRenderer::OnDeviceReset(LPDIRECT3DDEVICE9 device)
     LOG_DEBUG("[WorldRenderer] OnDeviceReset for texture '{}'", textureName_);
 
     if (viewTexture_)
+    {
         viewTexture_->OnDeviceReset(device);
+        rwReplacement_ = viewTexture_->GetRwTexture();
+    }
 }

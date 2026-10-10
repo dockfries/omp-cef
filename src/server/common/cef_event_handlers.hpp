@@ -50,4 +50,6 @@ struct ICefEventHandler
 // Shared handler list, defined in cef_event_handlers.cpp. Both plugin.cpp
 // (fires callbacks) and cef_extension_api.cpp (registers handlers) touch it.
 std::vector<ICefEventHandler*>& CefHandlerList();
-const std::vector<ICefEventHandler*>& GetCefEventHandlers();
+// Returned by value on purpose: a handler may register or unregister handlers while it is being
+// dispatched, which would invalidate an iterator into the shared list.
+std::vector<ICefEventHandler*> GetCefEventHandlers();

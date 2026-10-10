@@ -21,6 +21,10 @@ public:
     void Shutdown();
     void PumpMainThreadCallbacks();
 
+    // True on the thread that pumps the main-thread queue (the game/render thread). The exit path
+    // uses it to decide whether it may run the queued callbacks itself.
+    bool IsMainThread() const { return main_thread_id_.load(std::memory_order_acquire) == ::GetCurrentThreadId(); }
+
     std::string GetUserFilesPath();
 
     HWND GetHwnd() const { return hwnd_.load(std::memory_order_acquire); }
@@ -60,4 +64,5 @@ private:
 
     std::mutex main_thread_queue_mutex_;
     std::queue<std::function<void()>> main_thread_queue_;
+    std::atomic<DWORD> main_thread_id_{ 0 };
 };

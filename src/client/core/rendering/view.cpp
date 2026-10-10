@@ -14,15 +14,18 @@ void View::Initialize(LPDIRECT3DDEVICE9 device)
 
 void View::InternalCreateTexture(int width, int height)
 {
+    // Remember the size even when the device is not there yet: a browser can be created before the
+    // game device is captured, and OnDeviceReset() then builds the texture from these values.
+    width_ = width;
+    height_ = height;
+
     if (!device_) 
     {
-        LOG_ERROR("[View] D3D device is not initialized");
+        LOG_DEBUG("[View] No D3D device yet - the texture is created once one is captured");
         return;
     }
 
     wrapper_ = std::make_unique<ViewTexture>(device_, width, height);
-    width_ = width;
-    height_ = height;
 }
 
 void View::Create(int width, int height)
@@ -105,6 +108,12 @@ void View::OnDeviceReset(LPDIRECT3DDEVICE9 device)
     LOG_DEBUG("[View] OnDeviceReset for view {}", id_);
 
     device_ = device;
+
+    // A view created before the device was captured never got its texture (InternalCreateTexture
+    // needs the device), and nothing else would ever build it: do it now.
+    if (!wrapper_ && device_ && width_ > 0 && height_ > 0)
+        wrapper_ = std::make_unique<ViewTexture>(device_, width_, height_);
+
     if (wrapper_)
         wrapper_->OnDeviceReset(device);
 }

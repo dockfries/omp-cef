@@ -60,6 +60,9 @@ struct NetworkSession
 
 	void Reset();
 
+	// A session that is still alive when the manager shuts down would otherwise leak its ikcpcb.
+	~NetworkSession() { ReleaseKcp(); }
+
 private:
 	void ClearDownloadState();
 	void ReleaseKcp();

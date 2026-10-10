@@ -86,13 +86,20 @@ LRESULT CALLBACK WndProcHook::StaticWndProc(HWND hwnd, UINT msg, WPARAM wParam, 
     static thread_local int depth = 0;
     const bool reentered = (depth++ > 0);
 
-    if (!reentered && self && self->OnMessage)
+    if (!reentered && self)
     {
-        auto result = self->OnMessage(hwnd, msg, wParam, lParam);
-        if (result.has_value())
+        // Another ASI can chain the window procedure after us, which would bypass our hook: this
+        // re-installs it (throttled internally) so input keeps reaching CEF.
+        self->EnsureInstalled();
+
+        if (self->OnMessage)
         {
-            depth--;
-            return result.value();
+            auto result = self->OnMessage(hwnd, msg, wParam, lParam);
+            if (result.has_value())
+            {
+                depth--;
+                return result.value();
+            }
         }
     }
 

@@ -152,7 +152,11 @@ void BrowserClient::OnBeforeClose(CefRefPtr<CefBrowser> browser)
 
 void BrowserClient::GetViewRect(CefRefPtr<CefBrowser> /*browser*/, CefRect& rect)
 {
-    rect = manager_.GetBrowserInstance(browserId_)->view.rect();
+    // CEF keeps asking a browser that is alive but no longer tracked (a close that is still in
+    // flight, or a create that raced the shutdown sweep) for its rectangle, so this must not
+    // dereference the lookup result. The render handler documents a non-empty rectangle.
+    auto* instance = manager_.GetBrowserInstance(browserId_);
+    rect = instance ? instance->view.rect() : CefRect(0, 0, 1, 1);
 }
 
 void BrowserClient::OnPaint(CefRefPtr<CefBrowser> /*browser*/,

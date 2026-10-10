@@ -2,19 +2,38 @@
 
 #include "packet.hpp"
 
+// The transport is KCP, which fragments a message over as many datagrams as it needs, so a long
+// string is not limited by the datagram size. What does limit it is KCP's per-message fragment cap
+// (128 * mss, about 176 KB with the default MTU), so strings are capped below that. The old cap of
+// 4096 bytes silently cut off the resource manifest of any project with more than ~30 files.
+static constexpr size_t kMaxStringBytes = 128 * 1024;
+
 static inline void WriteString(std::ostream& os, const std::string& str)
 {
-	uint16_t length = static_cast<uint16_t>(str.length());
+	// Compared as size_t: narrowing to uint16_t first would wrap for strings of 65536 bytes or more.
+	size_t length = str.length();
 
-	if (length > 4096) {
-		LOG_ERROR("String too long: {} bytes, truncating to 4096", length);
-		length = 4096;
+	if (length > kMaxStringBytes) {
+		// No format arguments: this header is used by the client (fmt logger) and the server (printf logger).
+		LOG_ERROR("String exceeds the protocol limit and was truncated.");
+		length = kMaxStringBytes;
 	}
 
-	os.write(reinterpret_cast<const char*>(&length), sizeof(length));
+	if (length >= 0xFFFF) {
+		// Escaped length: uint16 0xFFFF followed by the real length. Readers that predate this only
+		// ever received strings that fit in a uint16, so nothing that used to work changes.
+		const uint16_t escape = 0xFFFF;
+		const uint32_t wide_length = static_cast<uint32_t>(length);
+		os.write(reinterpret_cast<const char*>(&escape), sizeof(escape));
+		os.write(reinterpret_cast<const char*>(&wide_length), sizeof(wide_length));
+	}
+	else {
+		const uint16_t wire_length = static_cast<uint16_t>(length);
+		os.write(reinterpret_cast<const char*>(&wire_length), sizeof(wire_length));
+	}
 
 	if (length > 0) {
-		os.write(str.data(), std::min(static_cast<size_t>(length), str.length()));
+		os.write(str.data(), length);
 	}
 }
 
@@ -26,11 +45,31 @@ static inline bool ReadString(std::istream& is, std::string& str)
 	if (is.gcount() != sizeof(length))
 		return false;
 
-	if (length > 0) {
-		str.resize(length);
-		is.read(&str[0], length);
+	uint64_t payload_length = length;
 
-		if (is.gcount() != length)
+	if (length == 0xFFFF) {
+		uint32_t wide_length = 0;
+		is.read(reinterpret_cast<char*>(&wide_length), sizeof(wide_length));
+		if (is.gcount() != sizeof(wide_length))
+			return false;
+
+		payload_length = wide_length;
+	}
+
+	if (payload_length > kMaxStringBytes) {
+		LOG_WARN("Refusing an over-long string: the protocol limit was exceeded.");
+		return false;
+	}
+
+	if (payload_length > 0) {
+		const std::streamsize available = is.rdbuf()->in_avail();
+		if (available < 0 || payload_length > static_cast<uint64_t>(available))
+			return false;
+
+		str.resize(static_cast<size_t>(payload_length));
+		is.read(&str[0], static_cast<std::streamsize>(payload_length));
+
+		if (is.gcount() != static_cast<std::streamsize>(payload_length))
 			return false;
 	}
 	else {
@@ -60,6 +99,13 @@ static inline bool ReadBytes(std::istream& is, std::vector<uint8_t>& bytes)
 		return false;
 
 	if (length > 0) {
+		// A length that exceeds what is left in the packet has to be rejected before the resize:
+		// value-initialising a vector to an attacker-chosen 4 GiB length would cost the whole
+		// allocation (or throw) before the read can fail.
+		const std::streamsize available = is.rdbuf()->in_avail();
+		if (available < 0 || static_cast<uint64_t>(length) > static_cast<uint64_t>(available))
+			return false;
+
 		bytes.resize(length);
 
 		is.read(reinterpret_cast<char*>(bytes.data()), length);

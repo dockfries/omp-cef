@@ -503,11 +503,12 @@ bool LocalResourceHandler::ReadResponse(
 {
     CEF_REQUIRE_IO_THREAD();
 
-    size_t remaining_bytes = data_.size() - read_offset_;
-    if (remaining_bytes == 0) {
+    if (read_offset_ >= data_.size()) {
         bytes_read = 0;
         return false;
     }
+
+    const size_t remaining_bytes = data_.size() - read_offset_;
 
     size_t bytes_to_copy = std::min(static_cast<size_t>(bytes_to_read), remaining_bytes);
     std::memcpy(data_out, data_.data() + read_offset_, bytes_to_copy);

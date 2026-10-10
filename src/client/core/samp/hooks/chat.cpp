@@ -99,19 +99,23 @@ void ChatHook::SetChatInputState(bool open)
 
     focus_.SetChatInputOpen(open);
 
-    // Local JS event to all browsers
-    for (const auto& kv : browser_.GetAllBrowsers())
+    // Local JS event to all browsers. This runs on the game thread, so the ids are copied out and
+    // the browser handle is taken under the manager lock.
+    for (const int id : browser_.GetBrowserIds())
     {
-        const int id = kv.first;
-        auto* inst = browser_.GetBrowserInstance(id);
-        if (!inst || !inst->browser)
+        CefRefPtr<CefBrowser> browser = browser_.GetBrowserHandle(id);
+        if (!browser)
+            continue;
+
+        CefRefPtr<CefFrame> frame = browser->GetMainFrame();
+        if (!frame || !frame->IsValid())
             continue;
 
         CefRefPtr<CefProcessMessage> msg = CefProcessMessage::Create("emit_event");
         CefRefPtr<CefListValue> list = msg->GetArgumentList();
         list->SetString(0, EnsureUtf8ForCef("omp:cef:internal:chatInputState"));
         list->SetBool(1, open);
-        inst->browser->GetMainFrame()->SendProcessMessage(PID_RENDERER, msg);
+        frame->SendProcessMessage(PID_RENDERER, msg);
     }
 
     // Server callback

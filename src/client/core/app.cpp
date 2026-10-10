@@ -20,16 +20,14 @@
 
 static bool SendEmitToBrowser(BrowserManager& browserManager, int browserId, const std::string& name, const std::vector<Argument>& args)
 {
-    auto* instance = browserManager.GetBrowserInstance(browserId);
-    if (!instance)
-        return false;
-
-    CefRefPtr<CefBrowser> browser = instance->browser;
+    // The handle is copied under the manager lock: this runs on the network thread, which must not
+    // touch the browser containers, nor a browser that the CEF UI thread is dropping.
+    CefRefPtr<CefBrowser> browser = browserManager.GetBrowserHandle(browserId);
     if (!browser)
     {
-        // The instance exists but CEF has not finished creating the browser yet. The
-        // server is expected to wait for the create result before emitting events, so
-        // this is worth knowing about rather than dropping the event in silence.
+        // Either the browser does not exist yet or CEF has not finished creating it. The server is
+        // expected to wait for the create result before emitting events, so this is worth knowing
+        // about rather than dropping the event in silence.
         LOG_DEBUG("[CEF] Event '{}' for browser {} arrived before the browser was ready - dropped.", name, browserId);
         return false;
     }
@@ -121,7 +119,8 @@ void App::ResetSession()
     flushed_once_ = false;
     pending_clear_chat_.store(false, std::memory_order_release);
 
-    // Destroy all browsers
+    // Destroy all browsers and drop the attach requests that belonged to the old session.
+    browser_.ClearPendingAttaches();
     browser_.DestroyAllBrowsers();
 }
 
@@ -189,8 +188,7 @@ void App::FlushPendingIfReady()
 
         for (const auto& emit : emits)
         {
-            auto* browser = browser_.GetBrowserInstance(emit.browserId);
-            if (browser)
+            if (browser_.HasBrowser(emit.browserId))
             {
 				SendEmitToBrowser(browser_, emit.browserId, emit.eventName, emit.args);  
             }
@@ -696,8 +694,7 @@ void App::OnPacketReceived(const NetworkPacket& packet)
             const int browserId = event.browserId;
             const std::string& eventName = event.name;
 
-            auto* browser = browser_.GetBrowserInstance(browserId);
-            if (browser)
+            if (browser_.HasBrowser(browserId))
             {
 				SendEmitToBrowser(browser_, browserId, eventName, event.args);
                 LOG_DEBUG("[CEF] EmitEvent {} sent to browser {} with {} args", eventName.c_str(), browserId, event.args.size());

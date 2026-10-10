@@ -32,6 +32,8 @@ void Gta::Shutdown()
 
 void Gta::PumpMainThreadCallbacks()
 {
+    main_thread_id_.store(::GetCurrentThreadId(), std::memory_order_release);
+
     std::queue<std::function<void()>> local;
 
     {

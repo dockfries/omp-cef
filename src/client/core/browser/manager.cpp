@@ -1,8 +1,10 @@
 #include "manager.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
+#include <thread>
 
 #include <game_sa/CPlayerPed.h>
 #include <game_sa/common.h>
@@ -18,6 +20,7 @@
 #include "rendering/render_manager.hpp"
 #include "network/network_manager.hpp"
 #include "scheme_handler.hpp"
+#include "system/exit_lifetime.hpp"
 #include "system/gta.hpp"
 #include "samp/components/netgame.hpp"
 #include "game_sa/CSprite.h"
@@ -337,9 +340,8 @@ bool BrowserManager::Initialize()
     CefRegisterSchemeHandlerFactory("http", "cef", new LocalSchemeHandlerFactory(resource_manager_));
 
     initialized_ = true;
-    uiThreadId_ = GetCurrentThreadId();
 
-    LOG_INFO("[CEF] Browser manager initialized on UI thread id: {}.", uiThreadId_);
+    LOG_INFO("[CEF] Browser manager initialized.");
 
     // Hook the device lifecycle callbacks
     auto& render_manager = RenderManager::Instance();
@@ -351,7 +353,21 @@ bool BrowserManager::Initialize()
     render_manager.OnAfterReset = [this](IDirect3DDevice9* device, const D3DPRESENT_PARAMETERS& pp) {
         this->OnDeviceReset(device);
     };
-    
+
+    // A device that is *replaced* rather than reset takes the same route: the old device stops being
+    // the one the game renders with, so the browser resources have to be released and rebuilt on the
+    // new one. Nobody subscribed to these two before, which left the views pointing at a device that
+    // was no longer in use (windowed/fullscreen switches, resolution changes, another overlay).
+    render_manager.OnDeviceDestroy = [this]() {
+        LOG_INFO("[CEF] The D3D device is going away - releasing browser resources.");
+        this->OnDeviceLost();
+    };
+
+    render_manager.OnDeviceInitialize = [this](IDirect3D9*, IDirect3DDevice9* device, const D3DPRESENT_PARAMETERS&) {
+        LOG_INFO("[CEF] Switching to a new D3D device - rebuilding browser resources.");
+        this->OnDeviceReset(device);
+    };
+
     LOG_INFO("[CEF] Browser manager device lifecycle callbacks registered.");
     return true;
 }
@@ -602,6 +618,8 @@ void BrowserManager::BeginShutdownOnUi()
     std::vector<CefRefPtr<CefBrowser>> to_close;
 
     {
+        // No container lock here on purpose: this task can be executed by a CEF thread after the
+        // manager was destroyed, and this is the UI thread - the only writer of the map.
         std::lock_guard<std::mutex> lock(shutdown_mutex_);
 
         for (auto it = browsers_.begin(); it != browsers_.end();)
@@ -636,6 +654,64 @@ void BrowserManager::BeginShutdownOnUi()
     }
 }
 
+void BrowserManager::ShutdownForGameExit()
+{
+    // SA-MP is deinitialising, but the process - and with it libcef - is still alive, and this is
+    // not DllMain. That makes it the right place to close the browsers: the CEF UI thread runs the
+    // closes, this thread (the game thread) pumps the queue the releases are posted to, and the
+    // textures end up being freed by the render thread while it is still running.
+    if (!initialized_)
+        return;
+
+    {
+        std::lock_guard<std::mutex> lock(shutdown_mutex_);
+        shutdown_sweep_done_ = false;
+    }
+
+    if (!CefPostTask(TID_UI, new UiTask([this]() { BeginShutdownOnUi(); }, nullptr)))
+    {
+        LOG_WARN("[CEF] Closedown: the CEF task queue is gone, the browsers cannot be closed here.");
+        return;
+    }
+
+    // Bounded on purpose: if CEF stops answering, the detach path still cleans up.
+    constexpr uint64_t kTimeoutMs = 2000;
+    const uint64_t start = ::GetTickCount64();
+    size_t remaining = 0;
+
+    for (;;)
+    {
+        if (gta_.IsMainThread())
+            gta_.PumpMainThreadCallbacks();
+
+        bool swept = false;
+        {
+            std::lock_guard<std::mutex> lock(shutdown_mutex_);
+            swept = shutdown_sweep_done_;
+        }
+
+        {
+            std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+            remaining = browsers_.size();
+        }
+
+        if (swept && remaining == 0)
+            break;
+
+        const uint64_t elapsed = ::GetTickCount64() - start;
+        if (elapsed > kTimeoutMs)
+        {
+            LOG_WARN("[CEF] Closedown: {} browser(s) still open after {} ms - the detach path takes over.",
+                remaining, elapsed);
+            break;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    LOG_INFO("[CEF] Closedown finished with {} browser(s) open.", remaining);
+}
+
 void BrowserManager::Shutdown()
 {
     if (!initialized_ || is_shutting_down_.exchange(true))
@@ -643,17 +719,53 @@ void BrowserManager::Shutdown()
 
     LOG_DEBUG("Shutting down CEF Browser manager...");
 
+    // Only the subscriptions are dropped: the cached capture surfaces are D3D resources and this
+    // runs on whatever thread shuts the manager down, so leaking them at exit is safer than
+    // releasing them from the wrong thread.
     screen_capture_.StopAll();
-    screen_capture_.OnDeviceLost();
 
-    // The CEF threads stop before the client is told to shut down (the game window is never closed
-    // with WM_CLOSE/WM_DESTROY, and the task queue accepts work it will never run), so CefShutdown()
-    // cannot be called: it must not run while a browser is alive, and leaked CEF state costs nothing
-    // in a process that is exiting anyway. Ask once and go.
-    const bool posted = !CefCurrentlyOn(TID_UI) &&
-        CefPostTask(TID_UI, new UiTask([this]() { BeginShutdownOnUi(); }, nullptr));
+    // ShutdownForGameExit() normally closed everything already. This is the fallback for a detach
+    // that never went through SA-MP's deinitialisation: the sweep below is only a request, the CEF
+    // UI thread may never run it, and anything left in the map would be destroyed right here on the
+    // shutdown thread (a BrowserInstance owns D3D and RenderWare textures). Hand those over instead
+    // - see system/exit_lifetime.hpp.
+    size_t remaining = 0;
+    {
+        std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
 
-    LOG_INFO("[CEF] Skipping CefShutdown() - the CEF threads are already gone (posted={}).", posted);
+        remaining = browsers_.size();
+
+        for (auto& [id, instance] : browsers_)
+        {
+            if (instance)
+                exit_lifetime::Abandon(std::move(instance));
+        }
+
+        browsers_.clear();
+        attached_objects_.clear();
+        pending_attaches_.clear();
+
+        std::lock_guard<std::mutex> snapshot_lock(snapshot_mutex_);
+        if (snapshot_ && !snapshot_->browsers.empty())
+            snapshot_ = std::make_shared<const RenderSnapshot>();
+    }
+
+    if (remaining > 0)
+    {
+        const bool posted = !CefCurrentlyOn(TID_UI) &&
+            CefPostTask(TID_UI, new UiTask([this]() { BeginShutdownOnUi(); }, nullptr));
+
+        LOG_WARN("[CEF] {} browser(s) were still open at process detach - asked CEF to close them (posted={}).",
+            remaining, posted);
+    }
+    else
+    {
+        LOG_INFO("[CEF] All browsers were closed before the process teardown.");
+    }
+
+    // CefShutdown() is still not called: it has to run on the thread that owns the message loop,
+    // and CEF is left to the process exit instead. Nothing of ours depends on it at this point.
+    LOG_DEBUG("[CEF] CefShutdown() is left to the process exit.");
 
     initialized_ = false;
 }
@@ -663,6 +775,8 @@ void BrowserManager::CreateBrowser(
 {
     LOG_DEBUG("[CEF] CreateBrowser called with ID={}, url={}", id, url);
     
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
     auto existing = browsers_.find(id);
     if (existing != browsers_.end())
     {
@@ -685,6 +799,8 @@ void BrowserManager::CreateWorldBrowser(
     const std::string normalized_url = NormalizeUrlForEmbeds(url);
     if (normalized_url != url)
         LOG_DEBUG("[CEF] Normalized URL -> {}", normalized_url);
+
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
 
     auto existing = browsers_.find(id);
     if (existing != browsers_.end())
@@ -710,6 +826,8 @@ void BrowserManager::CreateWorld2DBrowser(
     const std::string normalized_url = NormalizeUrlForEmbeds(url);
     if (normalized_url != url)
         LOG_DEBUG("[CEF] Normalized URL -> {}", normalized_url);
+
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
 
     auto existing = browsers_.find(id);
     if (existing != browsers_.end())
@@ -742,6 +860,8 @@ void BrowserManager::CreateBrowserInternal(
                                    height));
         return;
     }
+
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
 
     if (is_shutting_down_)
     {
@@ -838,6 +958,8 @@ void BrowserManager::CreateWorldBrowserInternal(
         return;
     }
 
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
     if (is_shutting_down_)
     {
         LOG_WARN("[CEF] CreateWorldBrowserInternal: ignored, the browser manager is shutting down.");
@@ -911,6 +1033,8 @@ void BrowserManager::CreateWorld2DBrowserInternal(
         return;
     }
 
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
     if (is_shutting_down_)
     {
         LOG_WARN("[CEF] CreateWorld2DBrowserInternal: ignored, the browser manager is shutting down.");
@@ -972,6 +1096,8 @@ void BrowserManager::SetWorld2DBrowserPos(int id, float worldX, float worldY, fl
         return;
     }
 
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
     auto* instance = GetBrowserInstance(id);
     if (!instance)
     {
@@ -998,6 +1124,8 @@ void BrowserManager::SetBrowserLayer(int id, int layer)
         return;
     }
 
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
     auto* instance = GetBrowserInstance(id);
     if (!instance || instance->closing)
     {
@@ -1021,6 +1149,8 @@ void BrowserManager::SetBrowserVisible(int id, bool visible)
         CefPostTask(TID_UI, base::BindOnce(&BrowserManager::SetBrowserVisible, base::Unretained(this), id, visible));
         return;
     }
+
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
 
     auto* instance = GetBrowserInstance(id);
     if (!instance)
@@ -1062,6 +1192,8 @@ void BrowserManager::DestroyBrowser(int id)
         CefPostTask(TID_UI, base::BindOnce(&BrowserManager::DestroyBrowser, base::Unretained(this), id));
         return;
     }
+
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
 
     player_stats_poll_.erase(id);
     CancelDrag(id);
@@ -1119,14 +1251,25 @@ void BrowserManager::ReleaseOnMainThread(std::shared_ptr<void> resource)
     if (!resource)
         return;
 
+    if (is_shutting_down_)
+    {
+        // The render thread is already gone, so the queued task would never run and the object
+        // would be destroyed here instead - on the shutdown thread. See system/exit_lifetime.hpp.
+        exit_lifetime::Abandon(std::move(resource));
+        return;
+    }
+
     // The task below is what destroys the object: the main-thread queue holds the last
     // reference until it has run the task and released it, so the D3D texture is freed on
     // the render thread instead of the CEF UI thread.
     gta_.PostToMainThread([resource]() mutable { resource.reset(); });
 }
 
+
 void BrowserManager::ReleaseBrowserResources(int id, BrowserInstance& instance)
 {
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
     if (instance.browser && instance.browser->GetHost())
         instance.browser->GetHost()->CloseDevTools();
 
@@ -1147,40 +1290,91 @@ std::shared_ptr<WorldRenderer> renderer = std::move(instance.renderer);
     if (renderer)
         gta_.PostToMainThread([renderer]() { renderer->RestoreTexture(); });
 
-    for (auto eit = entityToBrowserId_.begin(); eit != entityToBrowserId_.end();)
+    UnbindBrowser(id);
+    DropPendingAttaches(id);
+}
+
+void BrowserManager::BindObjectToBrowser(int objectId, int browserId, CEntity* entity)
+{
+    // A browser is attached to one object at a time.
+    attached_objects_.erase(
+        std::remove_if(attached_objects_.begin(), attached_objects_.end(),
+            [browserId](const AttachedObject& binding) { return binding.browserId == browserId; }),
+        attached_objects_.end());
+
+    AttachedObject binding;
+    binding.objectId = objectId;
+    binding.browserId = browserId;
+    binding.entity = entity;
+
+    attached_objects_.push_back(binding);
+
+    PublishSnapshot();
+}
+
+void BrowserManager::UnbindBrowser(int browserId)
+{
+    attached_objects_.erase(
+        std::remove_if(attached_objects_.begin(), attached_objects_.end(),
+            [browserId](const AttachedObject& binding) { return binding.browserId == browserId; }),
+        attached_objects_.end());
+}
+
+void BrowserManager::RefreshAttachedObjects()
+{
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
+    if (attached_objects_.empty())
+        return;
+
+    bool changed = false;
+
+    for (auto& binding : attached_objects_)
     {
-        if (eit->second == id)
+        // Re-resolve the entity every frame: the object can stream out (the entity is destroyed by
+        // the game) or back in with a different pointer, and the old pointer must never be
+        // dereferenced again.
+        CEntity* current = GetEntityFromObjectId(binding.objectId);
+        if (current != binding.entity)
         {
-            eit = entityToBrowserId_.erase(eit);
-        }
-        else
-        {
-            ++eit;
+            binding.entity = current;
+            changed = true;
         }
     }
 
+    if (changed)
+        PublishSnapshot();
 }
 
 void BrowserManager::PublishSnapshot()
 {
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
     auto next = std::make_shared<RenderSnapshot>();
 
     next->browsers.reserve(browsers_.size());
+    next->renderers.reserve(browsers_.size());
+
     for (auto& [id, instance] : browsers_)
     {
-        if (instance)
-            next->browsers.push_back(instance);
-            next->renderers.push_back(instance->renderer);
+        if (!instance)
+            continue;
+
+        next->browsers.push_back(instance);
+        next->renderers.push_back(instance->renderer);
     }
 
-    next->entities.reserve(entityToBrowserId_.size());
-    for (const auto& [entity, id] : entityToBrowserId_)
+    next->entities.reserve(attached_objects_.size());
+    for (const auto& binding : attached_objects_)
     {
-        auto it = browsers_.find(id);
+        if (!binding.entity)
+            continue;
+
+        auto it = browsers_.find(binding.browserId);
         if (it == browsers_.end() || !it->second)
             continue;
 
-        next->entities.push_back({ entity, it->second, it->second->renderer });
+        next->entities.push_back({ binding.entity, it->second, it->second->renderer });
     }
 
     std::lock_guard<std::mutex> lock(snapshot_mutex_);
@@ -1212,6 +1406,8 @@ void BrowserManager::SetWorldRendererOnUi(int id, std::shared_ptr<WorldRenderer>
         return;
     }
 
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
     auto it = browsers_.find(id);
     if (it == browsers_.end() || !it->second)
     {
@@ -1233,6 +1429,8 @@ void BrowserManager::DestroyAllBrowsers()
         return;
     }
 
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
     std::vector<int> ids;
     ids.reserve(browsers_.size());
     for (auto& kv : browsers_)
@@ -1249,6 +1447,8 @@ void BrowserManager::ReloadBrowser(int id, bool ignoreCache)
         CefPostTask(TID_UI, base::BindOnce(&BrowserManager::ReloadBrowser, base::Unretained(this), id, ignoreCache));
         return;
     }
+
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
 
     if (auto* inst = GetBrowserInstance(id))
     {
@@ -1267,6 +1467,8 @@ void BrowserManager::LoadUrl(int id, const std::string& url)
         CefPostTask(TID_UI, base::BindOnce(&BrowserManager::LoadUrl, base::Unretained(this), id, url));
         return;
     }
+
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
 
     auto* inst = GetBrowserInstance(id);
     if (!inst || !inst->browser)
@@ -1296,6 +1498,8 @@ void BrowserManager::SetDevToolsEnabled(int browserId, bool enabled)
                 base::Unretained(this), browserId, enabled));
         return;
     }
+
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
 
     auto* inst = GetBrowserInstance(browserId);
     if (!inst || !inst->browser)
@@ -1346,16 +1550,11 @@ void BrowserManager::AttachBrowserToObject(int browserId, int objectId)
         return;
     }
 
-    if (!browsers_.count(browserId))
-    {
-        LOG_WARN("[CEF] AttachBrowserToObject: Browser ID {} does not exist.", browserId);
-        return;
-    }
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
 
     if (CEntity* nativeEntity = GetEntityFromObjectId(objectId))
     {
-        entityToBrowserId_[nativeEntity] = browserId;
-        PublishSnapshot();
+        BindObjectToBrowser(objectId, browserId, nativeEntity);
         audio_.SetStreamMuted(browserId, false); // unmute when attached
 
         LOG_DEBUG("[CEF] Browser {} attached to object {} (Entity: {})", browserId, objectId, (const void*)nativeEntity);
@@ -1363,32 +1562,80 @@ void BrowserManager::AttachBrowserToObject(int browserId, int objectId)
     }
 
     // The object arrives over the game connection while this command arrives over the CEF socket,
-    // so the object can still be missing here. Keep the request until it exists.
-    pending_attaches_.emplace_back(browserId, objectId);
+    // and the browser itself may still be waiting for the resource gate, so neither the object nor
+    // the browser is guaranteed to exist yet. Keep the request until both are there.
+    QueuePendingAttach(browserId, objectId);
+}
+
+void BrowserManager::QueuePendingAttach(int browserId, int objectId)
+{
+    for (const auto& pending : pending_attaches_)
+    {
+        if (pending.browserId == browserId && pending.objectId == objectId)
+            return;
+    }
+
+    // Bounded: a server that keeps attaching to objects that never appear must not grow this
+    // without limit. Dropping the oldest request is what the old code did to every request.
+    constexpr size_t kMaxPendingAttaches = 64;
+    while (pending_attaches_.size() >= kMaxPendingAttaches)
+    {
+        LOG_WARN("[CEF] Attach queue is full - dropping the oldest request (browser {}, object {}).",
+            pending_attaches_.front().browserId, pending_attaches_.front().objectId);
+
+        pending_attaches_.erase(pending_attaches_.begin());
+    }
+
+    PendingAttach pending;
+    pending.browserId = browserId;
+    pending.objectId = objectId;
+    pending.firstSeenMs = ::GetTickCount64();
+
+    pending_attaches_.push_back(pending);
+}
+
+void BrowserManager::DropPendingAttaches(int browserId)
+{
+    pending_attaches_.erase(
+        std::remove_if(pending_attaches_.begin(), pending_attaches_.end(),
+            [browserId](const PendingAttach& pending) { return pending.browserId == browserId; }),
+        pending_attaches_.end());
 }
 
 void BrowserManager::ProcessPendingAttaches()
 {
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
+    const uint64_t now = ::GetTickCount64();
+
     for (auto it = pending_attaches_.begin(); it != pending_attaches_.end();)
     {
-        const int browserId = it->first;
-        const int objectId = it->second;
+        const int browserId = it->browserId;
+        const int objectId = it->objectId;
 
+        // The browser may still be waiting for the resource gate or for CEF to create it, so keep
+        // the request: a WorldObject3D browser that is not attached draws nothing at all. Explicit
+        // destroys drop their requests through DropPendingAttaches.
         if (!browsers_.count(browserId))
         {
-            it = pending_attaches_.erase(it);
+            ++it;
             continue;
         }
 
         if (CEntity* nativeEntity = GetEntityFromObjectId(objectId))
         {
-            entityToBrowserId_[nativeEntity] = browserId;
-            PublishSnapshot();
+            BindObjectToBrowser(objectId, browserId, nativeEntity);
             audio_.SetStreamMuted(browserId, false); // unmute when attached
 
             LOG_DEBUG("[CEF] Browser {} attached to object {} (Entity: {})", browserId, objectId, (const void*)nativeEntity);
             it = pending_attaches_.erase(it);
             continue;
+        }
+
+        if (!it->warned && now - it->firstSeenMs > 5000)
+        {
+            LOG_WARN("[CEF] Attach of browser {} to object {} is still pending after 5s: the object is not in the world (not streamed in, or it was created before you joined).", browserId, objectId);
+            it->warned = true;
         }
 
         ++it;
@@ -1403,33 +1650,32 @@ void BrowserManager::DetachBrowserFromObject(int browserId, int objectId)
         return;
     }
 
-    CEntity* nativeEntity = GetEntityFromObjectId(objectId);
-    if (nativeEntity)
-    {
-        auto it = entityToBrowserId_.find(nativeEntity);
-        if (it != entityToBrowserId_.end() && it->second == browserId)
-        {
-            // Restore the swapped texture on the render thread: RestoreTexture() writes
-            // RenderWare material pointers, which must not happen while the game thread is
-            // rendering this very entity.
-            auto* detachInstance = GetBrowserInstance(browserId);
-            std::shared_ptr<WorldRenderer> renderer = detachInstance ? detachInstance->renderer : nullptr;
-            if (renderer)
-                gta_.PostToMainThread([renderer]() { renderer->RestoreTexture(); });
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
 
-            entityToBrowserId_.erase(it);
-            PublishSnapshot();
-            audio_.SetStreamMuted(browserId, true); // mute when detached
-            LOG_DEBUG("[CEF] Browser {} detached from object {} (Entity: {})",
-                      browserId,
-                      objectId,
-                      (const void*)nativeEntity);
-        }
-    }
-    else
+    // The binding is keyed by object id, so a detach works even when the object already left the
+    // world (which used to leave the browser bound to a freed entity forever).
+    for (auto it = attached_objects_.begin(); it != attached_objects_.end(); ++it)
     {
-        LOG_WARN("[CEF] DetachBrowserFromObject: Could not find entity for object ID {}.", objectId);
+        if (it->browserId != browserId || it->objectId != objectId)
+            continue;
+
+        // Restore the swapped texture on the render thread: RestoreTexture() writes
+        // RenderWare material pointers, which must not happen while the game thread is
+        // rendering this very entity.
+        auto* detachInstance = GetBrowserInstance(browserId);
+        std::shared_ptr<WorldRenderer> renderer = detachInstance ? detachInstance->renderer : nullptr;
+        if (renderer)
+            gta_.PostToMainThread([renderer]() { renderer->RestoreTexture(); });
+
+        attached_objects_.erase(it);
+        PublishSnapshot();
+        audio_.SetStreamMuted(browserId, true); // mute when detached
+
+        LOG_DEBUG("[CEF] Browser {} detached from object {}.", browserId, objectId);
+        return;
     }
+
+    LOG_WARN("[CEF] DetachBrowserFromObject: browser {} is not attached to object {}.", browserId, objectId);
 }
 
 CEntity* BrowserManager::GetEntityFromObjectId(int objectId)
@@ -1460,6 +1706,8 @@ void BrowserManager::OnBrowserCreated(int id, CefRefPtr<CefBrowser> browser)
         return;
     }
 
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
     auto it = browsers_.find(id);
     if (it != browsers_.end())
     {
@@ -1484,6 +1732,8 @@ void BrowserManager::OnBrowserClosing(int id, CefRefPtr<CefBrowser> browser)
     // CEF UI thread. The entry stays in the map until OnBeforeClose arrives, but it must not
     // be drawn or updated any more - RenderAll and SetBrowserLayer already skip instances
     // whose closing flag is set.
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
     auto it = browsers_.find(id);
     if (it == browsers_.end() || !it->second)
         return;
@@ -1506,6 +1756,8 @@ void BrowserManager::OnBrowserClosed(int id, CefRefPtr<CefBrowser> browser)
         outstanding_close_ids_.erase(id);
     }
     shutdown_cv_.notify_all();
+
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
 
     auto it = browsers_.find(id);
     if (it != browsers_.end() && it->second && it->second->browser && browser &&
@@ -1635,11 +1887,11 @@ void BrowserManager::ClearPendingPaint(int id)
 
 void BrowserManager::RestoreBrowserTextures()
 {
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
     for (auto& [id, instance] : browsers_)
     {
         if (!instance || !instance->visible)
-            continue;
-
             continue;
 
         auto& pending_paint = instance->pending;
@@ -1674,6 +1926,8 @@ void BrowserManager::RequestVisibleBrowsersRepaint()
         CefPostTask(TID_UI, base::BindOnce(&BrowserManager::RequestVisibleBrowsersRepaint, base::Unretained(this)));
         return;
     }
+
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
 
     for (auto& [id, instance] : browsers_)
     {
@@ -1791,6 +2045,8 @@ void BrowserManager::DispatchExternalBeginFramesOnUi()
 {
     CEF_REQUIRE_UI_THREAD();
 
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
     for (auto& [id, inst] : browsers_)
     {
         if (!inst || !inst->visible || !inst->browser || !inst->browser->IsValid())
@@ -1809,6 +2065,15 @@ bool BrowserManager::RenderAll()
     // the maps at that point and the rendering hooks are about to be shut down.
     if (is_shutting_down_)
         return false;
+
+    // Attach requests can only be satisfied while the object is in the client world, and the
+    // browser that asked for them does not have to be painting (hidden browsers do not paint),
+    // so resolve them here on the game thread as well.
+    ProcessPendingAttaches();
+
+    // The SA-MP object behind a binding streams in and out, so refresh the entity pointers before
+    // anything renders with them.
+    RefreshAttachedObjects();
 
     UpdateNativeUiInput();
 
@@ -1835,7 +2100,7 @@ bool BrowserManager::RenderAll()
             if (inst->mode == RenderMode::WorldObject3D)
             {
                 if (renderer)
-                    inst->renderer->Clear();
+                    renderer->Clear();
             }
             else
             {
@@ -1866,6 +2131,8 @@ bool BrowserManager::RenderAll()
         const cef_rect_t* dirty_rects = pending_paint.dirty_rects.empty() ? &rect : pending_paint.dirty_rects.data();
         const size_t dirty_rect_count = pending_paint.dirty_rects.empty() ? 1 : pending_paint.dirty_rects.size();
 
+        bool uploaded = false;
+
         if (inst->mode == RenderMode::WorldObject3D)
         {
             if (renderer)
@@ -1875,15 +2142,25 @@ bool BrowserManager::RenderAll()
                     pending_paint.width,
                     pending_paint.height
                 );
+
+                uploaded = true;
             }
         }
-        else
+        else if (inst->view.IsReady())
         {
             inst->view.UpdateTexture(pending_paint.pixels.data(), dirty_rects, dirty_rect_count);
+            uploaded = true;
         }
 
-        pending_paint.ready = false;
-        pending_paint.dirty_rects.clear();
+        // The view or the world renderer is created on this thread shortly after the browser is
+        // created on the CEF UI thread, so the first frames can arrive before the target exists.
+        // Keep them staged in that case: dropping them leaves a static page blank until it
+        // happens to repaint.
+        if (uploaded)
+        {
+            pending_paint.ready = false;
+            pending_paint.dirty_rects.clear();
+        }
     }
 
     bool any_visible = false;
@@ -1922,11 +2199,18 @@ bool BrowserManager::RenderAll()
         // World2D
         if (browser->mode == RenderMode::World2D)
         {
+            // Written on the CEF UI thread, so read it once under the container lock.
+            World2DBrowserData world2d;
+            {
+                std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+                world2d = browser->world2d;
+            }
+
             // Project world position to screen position (GTA native projection)
             RwV3d worldPos{
-                browser->world2d.x,
-                browser->world2d.y,
-                browser->world2d.z + browser->world2d.offsetZ
+                world2d.x,
+                world2d.y,
+                world2d.z + world2d.offsetZ
             };
 
             RwV3d out{};
@@ -1940,8 +2224,8 @@ bool BrowserManager::RenderAll()
             const int viewW = r.width;
             const int viewH = r.height;
 
-            const int x = static_cast<int>(out.x - static_cast<float>(viewW) * browser->world2d.pivotX);
-            const int y = static_cast<int>(out.y - static_cast<float>(viewH) * browser->world2d.pivotY);
+            const int x = static_cast<int>(out.x - static_cast<float>(viewW) * world2d.pivotX);
+            const int y = static_cast<int>(out.y - static_cast<float>(viewH) * world2d.pivotY);
 
             browser->view.SetPosition(x, y);
             browser->view.Draw();
@@ -1989,12 +2273,49 @@ void BrowserManager::OnAfterEntityRender(CEntity* entity)
 
 BrowserInstance* BrowserManager::GetBrowserInstance(int id)
 {
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
     auto it = browsers_.find(id);
     return it != browsers_.end() ? it->second.get() : nullptr;
 }
 
+CefRefPtr<CefBrowser> BrowserManager::GetBrowserHandle(int id)
+{
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
+    auto it = browsers_.find(id);
+    return it != browsers_.end() && it->second ? it->second->browser : nullptr;
+}
+
+bool BrowserManager::HasBrowser(int id) const
+{
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+    return browsers_.find(id) != browsers_.end();
+}
+
+std::vector<int> BrowserManager::GetBrowserIds() const
+{
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
+    std::vector<int> ids;
+    ids.reserve(browsers_.size());
+
+    for (const auto& [id, instance] : browsers_)
+        ids.push_back(id);
+
+    return ids;
+}
+
+void BrowserManager::ClearPendingAttaches()
+{
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+    pending_attaches_.clear();
+}
+
 bool BrowserManager::IsAnyBrowserVisible() const
 {
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
     if (ShouldSkipBrowserRendering())
         return false;
 
@@ -2008,6 +2329,8 @@ bool BrowserManager::IsAnyBrowserVisible() const
 
 bool BrowserManager::IsAnyBrowserFocused() const
 {
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
     for (const auto& [id, instance] : browsers_)
     {
         if (instance && instance->view.IsFocused())
@@ -2023,6 +2346,8 @@ void BrowserManager::FocusBrowser(int browserId, bool focus)
         CefPostTask(TID_UI, base::BindOnce(&BrowserManager::FocusBrowser, base::Unretained(this), browserId, focus));
         return;
     }
+
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
 
     auto* instance_to_change = GetBrowserInstance(browserId);
     if (!instance_to_change)
@@ -2077,6 +2402,8 @@ void BrowserManager::FocusBrowser(int browserId, bool focus)
 
 BrowserInstance* BrowserManager::GetFocusedBrowser()
 {
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
     return focusedBrowserId_ == -1 ? nullptr : GetBrowserInstance(focusedBrowserId_);
 }
 
@@ -2095,12 +2422,14 @@ void BrowserManager::UpdateAudioSpatialization()
     }
 
     // Update 3D positions for world browsers bound to entities
-    for (const auto& [entity, browserId] : entityToBrowserId_)
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
+    for (const auto& binding : attached_objects_)
     {
-        if (entity && entity->m_matrix)
+        if (binding.entity && binding.entity->m_matrix)
         {
-            const auto& pos = entity->m_matrix->pos;
-            audio_.UpdateSourcePosition(browserId, pos.x, pos.y, pos.z);
+            const auto& pos = binding.entity->m_matrix->pos;
+            audio_.UpdateSourcePosition(binding.browserId, pos.x, pos.y, pos.z);
         }
     }
 }
@@ -2194,6 +2523,8 @@ bool BrowserManager::IsFocusedTextInputActive() const
     if (!focus_ || focusedBrowserId_ < 0)
         return false;
 
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
     const auto browser = browsers_.find(focusedBrowserId_);
     return browser != browsers_.end()
         && browser->second
@@ -2227,6 +2558,8 @@ void BrowserManager::EmitCustomEscapeMenuVisibility()
         return;
     }
 
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
     const bool visible = escape_menu_.IsCustomMenuOpen();
 
     for (const auto& [id, instance] : browsers_)
@@ -2254,6 +2587,8 @@ void BrowserManager::EmitCustomPlayerListVisibility()
         CefPostTask(TID_UI, base::BindOnce(&BrowserManager::EmitCustomPlayerListVisibility, base::Unretained(this)));
         return;
     }
+
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
 
     const bool visible = player_list_.IsCustomPlayerListOpen();
 
@@ -2311,6 +2646,8 @@ bool BrowserManager::HandleNativePlayerListOpenRequest()
 
 void BrowserManager::OnDeviceLost()
 {
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
     // Stop CEF rendering during device reset
     // This prevents CEF from trying to update textures while they're invalid
     isCefUpdatesPaused_ = true;
@@ -2341,6 +2678,8 @@ void BrowserManager::OnDeviceLost()
 
 void BrowserManager::OnDeviceReset(IDirect3DDevice9* device)
 {
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
     // Recreate all browser View resources (2D overlays)
     for (auto& [id, instance] : browsers_) 
     {
@@ -2701,6 +3040,8 @@ void BrowserManager::SetPlayerStatsPolling(int browserId, bool enabled, int inte
     if (intervalMs <= 0)
         intervalMs = 50;
 
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
     auto& state = player_stats_poll_[browserId];
     state.enabled = enabled;
     state.intervalMs = static_cast<uint32_t>(intervalMs);
@@ -2713,6 +3054,8 @@ void BrowserManager::SetPlayerStatsPolling(int browserId, bool enabled, int inte
 
 void BrowserManager::TickGameData()
 {
+    std::lock_guard<std::recursive_mutex> browsers_lock(browsers_mutex_);
+
     if (!initialized_ || player_stats_poll_.empty())
         return;
 

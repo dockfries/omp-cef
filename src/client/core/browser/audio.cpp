@@ -137,6 +137,21 @@ void AudioManager::Shutdown()
     if (audio_thread_.joinable()) {
         audio_thread_.join();
     }
+
+    // Release OpenAL once nothing can use it any more. Without this the device (and its mixing
+    // thread) stays open for the rest of the process, and a later Initialize() would report success
+    // while the mixer thread that consumes the queue is gone for good.
+    alcMakeContextCurrent(nullptr);
+
+    if (context_) {
+        alcDestroyContext(static_cast<ALCcontext*>(context_));
+        context_ = nullptr;
+    }
+
+    if (device_) {
+        alcCloseDevice(static_cast<ALCdevice*>(device_));
+        device_ = nullptr;
+    }
 }
 
 void AudioManager::OnPcmPacket(int browserId, const float** data, int frames, int channels, int sampleRate)
@@ -173,6 +188,13 @@ void AudioManager::OnPcmPacket(int browserId, const float** data, int frames, in
 
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
+
+        // The audio thread drains this every few milliseconds. If it ever falls behind - or died
+        // (see AudioThreadLoop) - keep the newest audio instead of growing without bound.
+        constexpr size_t kMaxQueuedPackets = 256;
+        while (packet_queue_.size() >= kMaxQueuedPackets)
+            packet_queue_.pop();
+
         packet_queue_.push(std::move(packet));
     }
 
@@ -258,6 +280,10 @@ void AudioManager::AudioThreadLoop()
     if (!alcMakeContextCurrent(static_cast<ALCcontext*>(context_))) {
         LOG_ERROR_EX("Audio thread failed to make context current");
         CheckAlcError(static_cast<ALCdevice*>(device_), "AudioThreadLoop::alcMakeContextCurrent");
+
+        // Nothing will drain the queue after this return, and OnPcmPacket only stops producing when
+        // this flag is set.
+        terminate_ = true;
         return;
     }
 
