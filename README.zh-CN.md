@@ -44,7 +44,7 @@ https://github.com/aurora-mp/omp-cef/wiki
 ## 当前 CEF 版本
 
 ```txt
-148.0.10+g7ee53f5+chromium-148.0.7778.218
+156.0.15+gcf671c0+chromium-156.0.8078.80
 ```
 
 ## 仓库结构
