@@ -1,4 +1,18 @@
 
+## [1.4.4](https://github.com/dockfries/omp-cef/compare/v1.4.3..v1.4.4) (2026-11-05)
+
+### 🧹 Chore
+
+- Bump the cef version to 156 - ([f2f8a32](https://github.com/dockfries/omp-cef/commit/f2f8a3222a42acc8af68aa481b0203c41d62934a))
+- Bump the version to 1.4.4 - ([dbab039](https://github.com/dockfries/omp-cef/commit/dbab0397401676d2dfc5735ac965892fb37aba4e))
+
+### 🐛 Bug Fixes
+
+- *(client)* Isolate CEF overlay rendering state - ([66aa687](https://github.com/dockfries/omp-cef/commit/66aa6877255baa0b3a57c3c10372e65405d7f611))
+
+
+
+
 ## [1.4.3](https://github.com/dockfries/omp-cef/compare/v1.4.2..v1.4.3) (2026-10-10)
 
 ### 🧹 Chore
